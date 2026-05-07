@@ -45,6 +45,15 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
 
   void set_control_method(ControlMethod method) { this->control_method_ = method; }
 
+  void set_auto_disable_ms(uint32_t ms) { this->auto_disable_ms_ = ms; }
+  void set_home_position(int32_t pos) {
+    this->home_position_ = pos;
+    this->homing_enabled_ = true;
+  }
+  void set_home_speed(float speed) { this->home_speed_ = speed; }
+  void set_homing_sgthrs(uint8_t v) { this->homing_sgthrs_ = v; }
+  void set_homing_tcoolthrs(uint32_t v) { this->homing_tcoolthrs_ = v; }
+
  protected:
   HighFrequencyLoopRequester high_freq_;
   ControlMethod control_method_{ControlMethod::CONTROL_UNSET};
@@ -65,6 +74,24 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   volatile bool step_task_running_{false};
   static void IRAM_ATTR HOT step_task_(void *arg);
 #endif
+
+  // Auto-disable after reaching target
+  uint32_t auto_disable_ms_{0};
+  bool auto_disabled_{false};
+  bool was_at_target_ad_{false};
+  uint32_t target_reached_at_ad_ms_{0};
+
+  // StallGuard homing on re-enable
+  bool homing_enabled_{false};
+  int32_t home_position_{0};
+  float home_speed_{400.0f};
+  uint8_t homing_sgthrs_{50};
+  uint32_t homing_tcoolthrs_{300000};
+  bool is_homing_{false};
+  int32_t homing_pending_target_{0};
+  float pre_homing_max_speed_{0.0f};
+  uint32_t pre_homing_sgthrs_{0};
+  uint32_t pre_homing_tcoolthrs_{0};
 };
 
 }  // namespace tmc2209
