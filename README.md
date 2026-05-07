@@ -19,6 +19,7 @@ Custom ESPHome external components for the MicroDriver project — stepper motor
 | `icm20948` | InvenSense ICM-20948 9-DOF IMU (base) | — |
 | `icm20948_i2c` | ICM-20948 I2C variant | I2C |
 | `icm20948_spi` | ICM-20948 SPI variant | SPI |
+| `stepper_closed_loop` | Optional closed-loop feedback for any stepper (AS5600 or any sensor) | I2C (via sensor) |
 | `insight` | ESPHome internal diagnostics (loop frequency, etc.) | — |
 | `freematics` | Freematics CAN bus sniffer interface | UART |
 
@@ -87,6 +88,7 @@ Each component has its own `README.md` with wiring diagrams, full configuration 
 - [TMC2300](components/tmc2300/README.md)
 - [AS5047](components/as5047/README.md)
 - [ICM-20948](components/icm20948/README.md)
+- [Stepper Closed Loop (AS5600)](components/stepper_closed_loop/README.md)
 - [Insight](components/insight/README.md)
 
 ---

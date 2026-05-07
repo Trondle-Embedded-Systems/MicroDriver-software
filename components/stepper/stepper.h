@@ -37,6 +37,7 @@ class Stepper {
     this->target_position = this->current_position;
     this->current_direction = Direction::STANDSTILL;
   }
+  virtual void enable(bool enable) {}
 
   volatile int32_t current_position{0};
   int32_t target_position{0};
