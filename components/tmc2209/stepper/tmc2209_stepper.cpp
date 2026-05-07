@@ -129,8 +129,26 @@ void TMC2209Stepper::set_target(int32_t steps) {
   }
 
   if (!this->is_enabled_) {
+    if (this->homing_enabled_ && this->auto_disabled_ && this->current_position != this->home_position_) {
+      // Start StallGuard homing sequence before moving to the requested target.
+      this->homing_pending_target_ = steps;
+      this->is_homing_ = true;
+      this->pre_homing_max_speed_ = this->max_speed_;
+      this->set_max_speed(this->home_speed_);
+      this->pre_homing_sgthrs_ = this->read_register(SGTHRS);
+      this->pre_homing_tcoolthrs_ = this->read_register(TCOOLTHRS);
+      this->write_register(SGTHRS, this->homing_sgthrs_);
+      this->write_register(TCOOLTHRS, this->homing_tcoolthrs_);
+      this->enable(true);
+      this->auto_disabled_ = false;
+      Stepper::set_target(this->home_position_);
+      ESP_LOGI(TAG, "StallGuard homing: moving to position %d at %.0f steps/s", this->home_position_,
+               this->home_speed_);
+      return;
+    }
     this->enable(true);
   }
+  this->auto_disabled_ = false;
   Stepper::set_target(steps);
 }
 
