@@ -110,14 +110,14 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
 
   // StallGuard homing: stall at end-stop means we have found home.
   if (this->is_homing_ && this->is_stalled()) {
-    this->current_position = this->home_position_;
+    const int32_t confirmed_home = this->target_position;  // the end-stop we aimed for
+    this->current_position = confirmed_home;
     this->set_max_speed(this->pre_homing_max_speed_);
     this->write_register(SGTHRS, this->pre_homing_sgthrs_);
     this->write_register(TCOOLTHRS, this->pre_homing_tcoolthrs_);
     this->is_homing_ = false;
     Stepper::set_target(this->homing_pending_target_);
-    ESP_LOGI(TAG, "Homing complete at %d, proceeding to %d", this->home_position_,
-             this->homing_pending_target_);
+    ESP_LOGI(TAG, "Homing complete at %d, proceeding to %d", confirmed_home, this->homing_pending_target_);
   }
 }
 
@@ -156,22 +156,33 @@ void TMC2209Stepper::set_target(int32_t steps) {
   }
 
   if (!this->is_enabled_) {
-    if (this->homing_enabled_ && this->auto_disabled_ && this->current_position != this->home_position_) {
-      // Start StallGuard homing sequence before moving to the requested target.
-      this->homing_pending_target_ = steps;
-      this->is_homing_ = true;
-      this->pre_homing_max_speed_ = this->max_speed_;
-      this->set_max_speed(this->home_speed_);
-      this->pre_homing_sgthrs_ = this->read_register(SGTHRS);
-      this->pre_homing_tcoolthrs_ = this->read_register(TCOOLTHRS);
-      this->write_register(SGTHRS, this->homing_sgthrs_);
-      this->write_register(TCOOLTHRS, this->homing_tcoolthrs_);
-      this->enable(true);
-      this->auto_disabled_ = false;
-      Stepper::set_target(this->home_position_);
-      ESP_LOGI(TAG, "StallGuard homing: moving to position %d at %.0f steps/s", this->home_position_,
-               this->home_speed_);
-      return;
+    if (this->homing_enabled_ && this->auto_disabled_) {
+      // Pick the nearest configured home position.
+      int32_t nearest = this->home_positions_[0];
+      int32_t nearest_dist = abs(this->current_position - nearest);
+      for (uint8_t i = 1; i < this->home_position_count_; i++) {
+        int32_t dist = abs(this->current_position - this->home_positions_[i]);
+        if (dist < nearest_dist) {
+          nearest_dist = dist;
+          nearest = this->home_positions_[i];
+        }
+      }
+      // Skip homing if already at the nearest home.
+      if (this->current_position != nearest) {
+        this->homing_pending_target_ = steps;
+        this->is_homing_ = true;
+        this->pre_homing_max_speed_ = this->max_speed_;
+        this->set_max_speed(this->home_speed_);
+        this->pre_homing_sgthrs_ = this->read_register(SGTHRS);
+        this->pre_homing_tcoolthrs_ = this->read_register(TCOOLTHRS);
+        this->write_register(SGTHRS, this->homing_sgthrs_);
+        this->write_register(TCOOLTHRS, this->homing_tcoolthrs_);
+        this->enable(true);
+        this->auto_disabled_ = false;
+        Stepper::set_target(nearest);
+        ESP_LOGI(TAG, "StallGuard homing: nearest end-stop %d at %.0f steps/s", nearest, this->home_speed_);
+        return;
+      }
     }
     this->enable(true);
   }

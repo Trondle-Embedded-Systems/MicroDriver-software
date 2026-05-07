@@ -656,7 +656,7 @@ When `auto_disable` is configured the driver is automatically de-energised after
 
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
-| `position` | **yes** | — | Step count of the physical home (end-stop) |
+| `positions` | **yes** | — | List of 1–4 end-stop step counts (e.g. `[0, 3200]`). The nearest is chosen at re-enable time. |
 | `speed` | **yes** | — | Homing speed in steps/s (e.g. `400 steps/s`) |
 | `threshold` | no | `50` | SGTHRS — StallGuard sensitivity (higher = triggers earlier) |
 | `tcoolthrs` | no | `300000` | TCOOLTHRS register — StallGuard is active when motor TSTEP < this value. Increase for slow homing speeds. |
@@ -674,11 +674,13 @@ stepper:
     auto_disable:
       settle: 200ms                 # cut power 200 ms after arriving
       stallguard_homing:
-        position: 0                 # physical end-stop is at step 0
+        positions: [0, 3200]        # two end-stops; nearest is chosen automatically
         speed: 400 steps/s          # slow approach for reliable stall detection
         threshold: 60               # SGTHRS — tune for your motor/load
         tcoolthrs: 500000           # must be > TSTEP at homing speed
 ```
+
+Up to 4 positions are supported. On re-enable the component measures `|current_position − each_home|` and moves toward the closest one — so a motor last parked near step 3200 will home against the far end-stop, not travel all the way to 0.
 
 > If the stepper is used with `stepper_closed_loop` (AS5600 encoder), add `auto_disable: true` to the `stepper_closed_loop` block instead and omit `auto_disable` here — the encoder re-syncs position automatically on re-enable.
 

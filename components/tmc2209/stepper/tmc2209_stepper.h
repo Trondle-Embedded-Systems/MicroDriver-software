@@ -46,9 +46,11 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   void set_control_method(ControlMethod method) { this->control_method_ = method; }
 
   void set_auto_disable_ms(uint32_t ms) { this->auto_disable_ms_ = ms; }
-  void set_home_position(int32_t pos) {
-    this->home_position_ = pos;
-    this->homing_enabled_ = true;
+  void add_home_position(int32_t pos) {
+    if (this->home_position_count_ < MAX_HOME_POSITIONS) {
+      this->home_positions_[this->home_position_count_++] = pos;
+      this->homing_enabled_ = true;
+    }
   }
   void set_home_speed(float speed) { this->home_speed_ = speed; }
   void set_homing_sgthrs(uint8_t v) { this->homing_sgthrs_ = v; }
@@ -81,9 +83,11 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   bool was_at_target_ad_{false};
   uint32_t target_reached_at_ad_ms_{0};
 
-  // StallGuard homing on re-enable
+  // StallGuard homing on re-enable (up to MAX_HOME_POSITIONS end-stops)
+  static constexpr uint8_t MAX_HOME_POSITIONS = 4;
   bool homing_enabled_{false};
-  int32_t home_position_{0};
+  int32_t home_positions_[MAX_HOME_POSITIONS]{};
+  uint8_t home_position_count_{0};
   float home_speed_{400.0f};
   uint8_t homing_sgthrs_{50};
   uint32_t homing_tcoolthrs_{300000};

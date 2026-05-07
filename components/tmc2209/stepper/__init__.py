@@ -1,4 +1,4 @@
-from esphome.const import CONF_ID, CONF_POSITION, CONF_SPEED, CONF_THRESHOLD
+from esphome.const import CONF_ID, CONF_SPEED, CONF_THRESHOLD
 from esphome.core import EsphomeError
 import esphome.codegen as cg
 import esphome.config_validation as cv
@@ -18,6 +18,7 @@ from .. import (
 CONF_AUTO_DISABLE = "auto_disable"
 CONF_SETTLE = "settle"
 CONF_STALLGUARD_HOMING = "stallguard_homing"
+CONF_POSITIONS = "positions"
 CONF_TCOOLTHRS = "tcoolthrs"
 
 CODEOWNERS = ["@slimcdk"]
@@ -55,7 +56,9 @@ CONFIG_SCHEMA = cv.All(
                     cv.Optional(CONF_SETTLE, default="200ms"): cv.positive_time_period_milliseconds,
                     cv.Optional(CONF_STALLGUARD_HOMING): cv.Schema(
                         {
-                            cv.Required(CONF_POSITION): cv.int_,
+                            cv.Required(CONF_POSITIONS): cv.All(
+                                cv.ensure_list(cv.int_), cv.Length(min=1, max=4)
+                            ),
                             cv.Required(CONF_SPEED): stepper.validate_speed,
                             cv.Optional(CONF_THRESHOLD, default=50): cv.int_range(0, 255),
                             cv.Optional(CONF_TCOOLTHRS, default=300000): cv.int_range(0, 1048575),
@@ -93,7 +96,8 @@ async def to_code(config):
 
         if CONF_STALLGUARD_HOMING in ad_conf:
             home_conf = ad_conf[CONF_STALLGUARD_HOMING]
-            cg.add(var.set_home_position(home_conf[CONF_POSITION]))
+            for pos in home_conf[CONF_POSITIONS]:
+                cg.add(var.add_home_position(pos))
             cg.add(var.set_home_speed(home_conf[CONF_SPEED]))
             cg.add(var.set_homing_sgthrs(home_conf[CONF_THRESHOLD]))
             cg.add(var.set_homing_tcoolthrs(home_conf[CONF_TCOOLTHRS]))
