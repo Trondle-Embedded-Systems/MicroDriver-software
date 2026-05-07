@@ -92,6 +92,33 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
     }
 #endif
   }
+
+  // Auto-disable after settling at target (Case 2: no stepper_closed_loop).
+  if (this->auto_disable_ms_ > 0 && !this->is_homing_) {
+    const bool at_target = this->has_reached_target();
+    if (at_target && !this->was_at_target_ad_) {
+      this->target_reached_at_ad_ms_ = millis();
+    }
+    this->was_at_target_ad_ = at_target;
+    if (at_target && !this->auto_disabled_ &&
+        (millis() - this->target_reached_at_ad_ms_) >= this->auto_disable_ms_) {
+      this->enable(false);
+      this->auto_disabled_ = true;
+      ESP_LOGD(TAG, "Auto-disabled after %u ms settle", this->auto_disable_ms_);
+    }
+  }
+
+  // StallGuard homing: stall at end-stop means we have found home.
+  if (this->is_homing_ && this->is_stalled()) {
+    this->current_position = this->home_position_;
+    this->set_max_speed(this->pre_homing_max_speed_);
+    this->write_register(SGTHRS, this->pre_homing_sgthrs_);
+    this->write_register(TCOOLTHRS, this->pre_homing_tcoolthrs_);
+    this->is_homing_ = false;
+    Stepper::set_target(this->homing_pending_target_);
+    ESP_LOGI(TAG, "Homing complete at %d, proceeding to %d", this->home_position_,
+             this->homing_pending_target_);
+  }
 }
 
 #if defined(USE_ESP32) && CONFIG_FREERTOS_UNICORE == 0

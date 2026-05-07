@@ -96,6 +96,17 @@ stepper_closed_loop:
   update_interval: 50ms
 ```
 
+### With auto-disable (motor de-energises when idle)
+
+```yaml
+stepper_closed_loop:
+  stepper_id: motor
+  position_sensor: encoder_position
+  steps_per_revolution: 3200
+  settle_window: 500ms   # keep correcting for 500 ms after arrival
+  auto_disable: true     # then cut power; re-enable syncs from AS5600
+```
+
 ### With error monitoring sensor
 
 ```yaml
@@ -122,6 +133,7 @@ stepper_closed_loop:
 | `max_correction` | no | `500` | Maximum plausible error in steps; larger jumps are discarded as noise |
 | `initial_sync` | no | `true` | Sync `current_position` and `target_position` to encoder on first reading |
 | `settle_window` | no | `500ms` | How long after reaching the target to keep correcting. Accepts ESPHome time values (`500ms`, `1s`, `0s` to disable). Set to `0s` to stop correcting the moment the target is reached. |
+| `auto_disable` | no | `false` | Disable the motor driver after `settle_window` expires (coils de-energised). On the next `stepper.set_target` the encoder re-syncs position before the motor moves. |
 | `update_interval` | no | `50ms` | How often to check the encoder |
 | `error_sensor` | no | — | Optional sensor that publishes the current step error (positive = motor behind) |
 

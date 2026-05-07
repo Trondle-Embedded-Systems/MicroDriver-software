@@ -1,4 +1,4 @@
-from esphome.const import CONF_ID
+from esphome.const import CONF_ID, CONF_POSITION, CONF_SPEED, CONF_THRESHOLD
 from esphome.core import EsphomeError
 import esphome.codegen as cg
 import esphome.config_validation as cv
@@ -14,6 +14,11 @@ from .. import (
     register_tmc2209_base,
     validate_tmc2209_base,
 )
+
+CONF_AUTO_DISABLE = "auto_disable"
+CONF_SETTLE = "settle"
+CONF_STALLGUARD_HOMING = "stallguard_homing"
+CONF_TCOOLTHRS = "tcoolthrs"
 
 CODEOWNERS = ["@slimcdk"]
 
@@ -45,6 +50,19 @@ CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
             cv.GenerateID(CONF_ID): cv.declare_id(TMC2209Stepper),
+            cv.Optional(CONF_AUTO_DISABLE): cv.Schema(
+                {
+                    cv.Optional(CONF_SETTLE, default="200ms"): cv.positive_time_period_milliseconds,
+                    cv.Optional(CONF_STALLGUARD_HOMING): cv.Schema(
+                        {
+                            cv.Required(CONF_POSITION): cv.int_,
+                            cv.Required(CONF_SPEED): stepper.validate_speed,
+                            cv.Optional(CONF_THRESHOLD, default=50): cv.int_range(0, 255),
+                            cv.Optional(CONF_TCOOLTHRS, default=300000): cv.int_range(0, 1048575),
+                        }
+                    ),
+                }
+            ),
         }
     ).extend(TMC2209_BASE_CONFIG_SCHEMA, stepper.STEPPER_SCHEMA),
     cv.has_none_or_all_keys(CONF_STEP_PIN, CONF_DIR_PIN),
@@ -68,3 +86,14 @@ async def to_code(config):
         cg.add(var.set_control_method(ControlMethod.PULSES_CONTROL))
     else:
         raise EsphomeError("Could not determine control method!")
+
+    if CONF_AUTO_DISABLE in config:
+        ad_conf = config[CONF_AUTO_DISABLE]
+        cg.add(var.set_auto_disable_ms(ad_conf[CONF_SETTLE].total_milliseconds))
+
+        if CONF_STALLGUARD_HOMING in ad_conf:
+            home_conf = ad_conf[CONF_STALLGUARD_HOMING]
+            cg.add(var.set_home_position(home_conf[CONF_POSITION]))
+            cg.add(var.set_home_speed(home_conf[CONF_SPEED]))
+            cg.add(var.set_homing_sgthrs(home_conf[CONF_THRESHOLD]))
+            cg.add(var.set_homing_tcoolthrs(home_conf[CONF_TCOOLTHRS]))
