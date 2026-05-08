@@ -1,6 +1,6 @@
 # MicroDriver ESPHome Components
 
-Custom ESPHome external components for the MicroDriver project — stepper motor drivers, encoders, and IMUs.
+Custom ESPHome external components for the MicroDriver project: stepper motor drivers, encoders, and IMUs.
 
 ## Components
 
@@ -90,6 +90,13 @@ Each component has its own `README.md` with wiring diagrams, full configuration 
 - [ICM-20948](components/icm20948/README.md)
 - [Stepper Closed Loop (AS5600)](components/stepper_closed_loop/README.md)
 - [Insight](components/insight/README.md)
+
+
+---
+
+## Acknowledgements
+
+This repo has been modified from https://github.com/slimcdk/esphome-custom-components/tree/master
 
 ---
 
