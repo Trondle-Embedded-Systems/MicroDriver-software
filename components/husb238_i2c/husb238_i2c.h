@@ -7,16 +7,29 @@
 namespace esphome {
 namespace husb238_i2c {
 
+// Forward declarations
+class HUSB238;
+
+// Sensor classes that inherit from both PollingComponent and sensor::Sensor
+class OutputVoltageSensor : public PollingComponent, public sensor::Sensor, public Parented<HUSB238> {};
+class OutputCurrentSensor : public PollingComponent, public sensor::Sensor, public Parented<HUSB238> {};
+class InputVoltageSensor : public PollingComponent, public sensor::Sensor, public Parented<HUSB238> {};
+
+// Main controller class
 class HUSB238 : public PollingComponent, public i2c::I2CDevice {
  public:
   void setup() override;
   void update() override;
   void dump_config() override;
 
+  void update_output_voltage();
+  void update_output_current();
+  void update_input_voltage();
+
   // Sensor setters
-  void set_output_voltage_sensor(sensor::Sensor *sensor) { output_voltage_sensor_ = sensor; }
-  void set_output_current_sensor(sensor::Sensor *sensor) { output_current_sensor_ = sensor; }
-  void set_input_voltage_sensor(sensor::Sensor *sensor) { input_voltage_sensor_ = sensor; }
+  void set_output_voltage_sensor(OutputVoltageSensor *sensor) { output_voltage_sensor_ = sensor; }
+  void set_output_current_sensor(OutputCurrentSensor *sensor) { output_current_sensor_ = sensor; }
+  void set_input_voltage_sensor(InputVoltageSensor *sensor) { input_voltage_sensor_ = sensor; }
 
   // PDO configuration
   void set_pdo_voltage(uint8_t pdo_index, uint8_t voltage) {
@@ -41,14 +54,11 @@ class HUSB238 : public PollingComponent, public i2c::I2CDevice {
 
   // Internal methods
   bool read_register(uint8_t reg, uint8_t *data, size_t len);
-  void update_output_voltage_();
-  void update_output_current_();
-  void update_input_voltage_();
 
   // Sensor pointers
-  sensor::Sensor *output_voltage_sensor_{nullptr};
-  sensor::Sensor *output_current_sensor_{nullptr};
-  sensor::Sensor *input_voltage_sensor_{nullptr};
+  OutputVoltageSensor *output_voltage_sensor_{nullptr};
+  OutputCurrentSensor *output_current_sensor_{nullptr};
+  InputVoltageSensor *input_voltage_sensor_{nullptr};
 
   // PDO configuration arrays
   uint8_t pdo_voltages_[5] = {5, 9, 15, 20, 0};
