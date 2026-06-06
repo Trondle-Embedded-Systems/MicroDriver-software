@@ -53,15 +53,18 @@ async def to_code(config):
     await i2c.register_i2c_device(var, config)
 
     if "output_voltage" in config:
-        sens = await sensor.new_sensor(config["output_voltage"], var)
+        sens = await sensor.new_sensor(config["output_voltage"])
+        await cg.register_parented(sens, var)
         cg.add(var.set_output_voltage_sensor(sens))
 
     if "output_current" in config:
-        sens = await sensor.new_sensor(config["output_current"], var)
+        sens = await sensor.new_sensor(config["output_current"])
+        await cg.register_parented(sens, var)
         cg.add(var.set_output_current_sensor(sens))
 
     if "input_voltage" in config:
-        sens = await sensor.new_sensor(config["input_voltage"], var)
+        sens = await sensor.new_sensor(config["input_voltage"])
+        await cg.register_parented(sens, var)
         cg.add(var.set_input_voltage_sensor(sens))
 
     for i in range(5):
