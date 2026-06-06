@@ -32,8 +32,8 @@ void TMC2209Stepper::setup() {
     this->write_field(DEDGE_FIELD, false);
     this->write_field(INDEX_OTPW_FIELD, false);
     this->write_field(INDEX_STEP_FIELD, true);
-    this->ips_.current_position_ptr = &this->current_position;
-    this->ips_.direction_ptr = &this->current_direction;
+    this->ips_.current_position_ptr = const_cast<int32_t*>(&this->current_position);
+    this->ips_.direction_ptr = const_cast<Direction*>(&this->current_direction);
     this->index_pin_->attach_interrupt(IndexPulseStore::pulse_isr, &this->ips_, gpio::INTERRUPT_ANY_EDGE);
   }
 

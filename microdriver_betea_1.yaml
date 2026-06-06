@@ -221,9 +221,9 @@ output:
     inverted: false
 
 husb238_i2c:
-  - id: usb_pd
-    output_voltage:
-      name: "USB Voltage"   
+  id: usb_pd
+  output_voltage:
+    name: "USB Voltage"   
 
 external_components:
   - source: github://Trondle-Embedded-Systems/MicroDriver-software
