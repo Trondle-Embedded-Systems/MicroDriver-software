@@ -95,7 +95,7 @@ stepper:
 
     # Configuration
     config_dump_include_registers: true
-    clock_frequency: 12MHz
+    clock_frequency: 40
 
     # Sensorless homing
     on_stall:
@@ -220,6 +220,11 @@ output:
     id: status_led
     inverted: false
 
+husb238_i2c:
+  - id: usb_pd
+    output_voltage:
+      name: "USB Voltage"   
+
 external_components:
   - source: github://Trondle-Embedded-Systems/MicroDriver-software
-    components: [tmc2209_hub, tmc2209, stepper]
+    components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
