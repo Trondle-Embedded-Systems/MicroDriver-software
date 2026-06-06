@@ -76,7 +76,7 @@ def final_validate(config):
                 )
 
     return uart.final_validate_device_schema(
-        CONF_TMC2209_HUB, require_rx=True, require_tx=True
+        CONF_TMC2209_HUB, require_rx=False, require_tx=True
     )(config)
 
 
