@@ -228,3 +228,4 @@ husb238_i2c:
 external_components:
   - source: github://Trondle-Embedded-Systems/MicroDriver-software
     components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
+    refresh: 0s
