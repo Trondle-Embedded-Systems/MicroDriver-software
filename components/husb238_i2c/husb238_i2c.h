@@ -11,9 +11,18 @@ namespace husb238_i2c {
 class HUSB238;
 
 // Sensor classes that inherit from both PollingComponent and sensor::Sensor
-class OutputVoltageSensor : public PollingComponent, public sensor::Sensor, public Parented<HUSB238> {};
-class OutputCurrentSensor : public PollingComponent, public sensor::Sensor, public Parented<HUSB238> {};
-class InputVoltageSensor : public PollingComponent, public sensor::Sensor, public Parented<HUSB238> {};
+class OutputVoltageSensor : public PollingComponent, public sensor::Sensor, public Parented<HUSB238> {
+ public:
+  void update() override {}
+};
+class OutputCurrentSensor : public PollingComponent, public sensor::Sensor, public Parented<HUSB238> {
+ public:
+  void update() override {}
+};
+class InputVoltageSensor : public PollingComponent, public sensor::Sensor, public Parented<HUSB238> {
+ public:
+  void update() override {}
+};
 
 // Main controller class
 class HUSB238 : public PollingComponent, public i2c::I2CDevice {
