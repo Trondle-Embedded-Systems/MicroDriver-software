@@ -9,7 +9,6 @@ static const char *TAG = "husb238.i2c";
 void HUSB238::setup() {
   ESP_LOGCONFIG(TAG, "Setting up HUSB238 USB Power Delivery Controller...");
 
-  // Read chip ID to verify communication
   uint8_t chip_id;
   if (!read_register(REG_CHIP_ID, &chip_id, 1)) {
     ESP_LOGE(TAG, "Failed to read HUSB238 chip ID");
@@ -19,7 +18,6 @@ void HUSB238::setup() {
 
   ESP_LOGD(TAG, "HUSB238 Chip ID: 0x%02X", chip_id);
 
-  // Read firmware version
   uint8_t fw_version;
   if (!read_register(REG_FIRMWARE_VERSION, &fw_version, 1)) {
     ESP_LOGW(TAG, "Failed to read firmware version");
@@ -31,15 +29,13 @@ void HUSB238::setup() {
 }
 
 void HUSB238::update() {
-  update_output_voltage_();
-  update_output_current_();
-  update_input_voltage_();
+  update_output_voltage();
+  update_output_current();
+  update_input_voltage();
 }
 
-void HUSB238::update_output_voltage_() {
-  if (!output_voltage_sensor_) {
-    return;
-  }
+void HUSB238::update_output_voltage() {
+  if (!output_voltage_sensor_) return;
 
   uint8_t voltage_raw;
   if (!read_register(REG_VOLTAGE, &voltage_raw, 1)) {
@@ -47,9 +43,7 @@ void HUSB238::update_output_voltage_() {
     return;
   }
 
-  // Convert register value to voltage (0.1V per LSB)
   float voltage = voltage_raw * 0.1f;
-
   if (voltage != last_output_voltage_) {
     output_voltage_sensor_->publish_state(voltage);
     last_output_voltage_ = voltage;
@@ -57,10 +51,8 @@ void HUSB238::update_output_voltage_() {
   }
 }
 
-void HUSB238::update_output_current_() {
-  if (!output_current_sensor_) {
-    return;
-  }
+void HUSB238::update_output_current() {
+  if (!output_current_sensor_) return;
 
   uint8_t current_raw;
   if (!read_register(REG_CURRENT, &current_raw, 1)) {
@@ -68,9 +60,7 @@ void HUSB238::update_output_current_() {
     return;
   }
 
-  // Convert register value to current (10mA per LSB)
   float current = current_raw * 10.0f;
-
   if (current != last_output_current_) {
     output_current_sensor_->publish_state(current);
     last_output_current_ = current;
@@ -78,10 +68,8 @@ void HUSB238::update_output_current_() {
   }
 }
 
-void HUSB238::update_input_voltage_() {
-  if (!input_voltage_sensor_) {
-    return;
-  }
+void HUSB238::update_input_voltage() {
+  if (!input_voltage_sensor_) return;
 
   uint8_t input_voltage_raw;
   if (!read_register(REG_POWER, &input_voltage_raw, 1)) {
@@ -90,7 +78,6 @@ void HUSB238::update_input_voltage_() {
   }
 
   float voltage = input_voltage_raw * 0.1f;
-
   if (voltage != last_input_voltage_) {
     input_voltage_sensor_->publish_state(voltage);
     last_input_voltage_ = voltage;
