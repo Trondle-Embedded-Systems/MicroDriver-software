@@ -31,8 +31,13 @@ void TMC2209Component::setup() {
   }
 
   if (!this->read_field(VERSION_FIELD)) {
-    this->status_set_error("Failed to communicate with driver");
+    this->status_set_error(LOG_STR("Failed to communicate with driver"));
     this->mark_failed();
+    // Disable the bus so the remaining configuration writes (and any on_boot
+    // actions / sensors) become instant no-ops instead of repeatedly timing out.
+    // The component just logs that it failed and the device boots normally.
+    this->set_bus_enabled(false);
+    return;
   }
 
   this->write_field(PDN_DISABLE_FIELD, true);
