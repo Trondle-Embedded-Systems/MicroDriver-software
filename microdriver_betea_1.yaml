@@ -69,17 +69,23 @@ uart:
   # so both ends can drive the line without contention. The internal pull-up is
   # weak (~45k); add an external 1k-4.7k pull-up to 3V3 (or lower baud_rate) if
   # comms are unreliable at 500k.
+  # Both pins are the same physical GPIO7, so the pin-reuse guard must be told this
+  # is intentional (single-wire). Open-drain + pull-up is required by ESP-IDF so the
+  # shared line is never push-pull-driven against the TMC2209.
   tx_pin:
     number: GPIO7
     mode:
+      input: true       # keep the input buffer enabled so RX can read the shared line
       output: true
       open_drain: true
       pullup: true
+    ignore_pin_validation_error: true
   rx_pin:
     number: GPIO7
     mode:
       input: true
       pullup: true
+    ignore_pin_validation_error: true
   baud_rate: 500000
 
 # TMC2209 Hub
