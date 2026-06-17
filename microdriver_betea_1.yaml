@@ -63,7 +63,10 @@ i2c:
 # UART configuration for TMC2209 (single-wire)
 uart:
   id: tmc_uart
+  # Single-wire half-duplex UART: TMC2209 PDN_UART and the ESP share one line
+  # (net UTX -> GPIO7), so rx_pin must be the SAME GPIO as tx_pin.
   tx_pin: GPIO7
+  rx_pin: GPIO7
   baud_rate: 500000
 
 # TMC2209 Hub
@@ -95,7 +98,9 @@ stepper:
 
     # Configuration
     config_dump_include_registers: true
-    clock_frequency: 40
+    # TMC2209 internal oscillator is ~12 MHz (value is in Hz).
+    # Used for VACTUAL velocity and TPOWERDOWN timing math.
+    clock_frequency: 12000000
 
     # Sensorless homing
     on_stall:

@@ -116,6 +116,11 @@ class TMC2209API : public Parented<TMC2209Hub> {
   bool get_dirty_bit_(uint8_t index);
   bool cache_(CacheOperation operation, uint8_t address, uint32_t *value);
   uint8_t crc8_(uint8_t *data, uint32_t bytes);
+
+  // Low-level single-wire UART helpers (see datasheet section 4)
+  void flush_rx_();                                       // drop stale/echoed RX bytes
+  void send_datagram_(const uint8_t *data, uint8_t len);  // transmit + discard self-echo
+  bool read_register_once_(uint8_t address, int32_t *value_out);  // one read attempt
 };
 
 }  // namespace tmc2209
