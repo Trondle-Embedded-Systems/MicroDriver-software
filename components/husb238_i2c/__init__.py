@@ -6,6 +6,9 @@ from esphome.const import CONF_ID, STATE_CLASS_MEASUREMENT, UNIT_VOLT
 
 CODEOWNERS = ["@nicolastrondle"]
 DEPENDENCIES = ["i2c"]
+# This component creates sensors, so it must pull in the core `sensor` component
+# itself (otherwise it only builds when the config also has a top-level `sensor:`).
+AUTO_LOAD = ["sensor"]
 
 _LOGGER = logging.getLogger(__name__)
 
