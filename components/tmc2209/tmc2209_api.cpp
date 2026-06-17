@@ -96,6 +96,15 @@ void TMC2209API::send_datagram_(const uint8_t *data, uint8_t len) {
     this->parent_->read_byte(&scrap);
 }
 
+bool TMC2209API::wait_available_(uint8_t count) {
+  const uint32_t start = millis();
+  while (this->parent_->available() < (int) count) {
+    if (millis() - start > REPLY_TIMEOUT_MS)
+      return false;
+  }
+  return true;
+}
+
 bool TMC2209API::read_register_once_(uint8_t address, int32_t *value_out) {
   std::array<uint8_t, 8> buffer = {0};
   buffer.at(0) = SYNC_BYTE;
@@ -106,20 +115,18 @@ bool TMC2209API::read_register_once_(uint8_t address, int32_t *value_out) {
   this->flush_rx_();
   this->parent_->write_array(buffer.data(), 4);
   this->parent_->flush();
-  // Discard the 4-byte echo of our own request (single-wire); it is already in the
-  // receiver once transmission has finished, then read the reply.
-  std::array<uint8_t, 4> echo = {0};
-  this->parent_->read_array(echo.data(), 4);
 
-  // Wait (briefly) for the full 8-byte reply so a silent driver fails fast.
-  const uint32_t start = millis();
-  while (this->parent_->available() < 8) {
-    if (millis() - start > REPLY_TIMEOUT_MS)
-      return false;
-  }
-
-  if (!this->parent_->read_array(buffer.data(), 8))
+  // On the shared single wire the 4-byte request is echoed straight back, followed
+  // by the 8-byte reply. Wait for all 12 bytes via available() with a short timeout:
+  // a silent/un-echoing bus then fails in a few ms instead of blocking on the UART's
+  // ~100 ms internal read timeout (which would also log an error on every byte).
+  if (!this->wait_available_(12))
     return false;
+
+  std::array<uint8_t, 4> echo = {0};
+  this->parent_->read_array(echo.data(), 4);    // discard the request echo
+  this->parent_->read_array(buffer.data(), 8);  // the actual reply
+
   if (buffer.at(0) != SYNC_BYTE)        // Byte 0: sync
     return false;
   if (buffer.at(1) != MASTER_ADDRESS)   // Byte 1: reply is addressed to the master
@@ -150,6 +157,9 @@ void TMC2209API::write_register(uint8_t address, int32_t value) {
   // intended value regardless of bus acknowledgement.
   this->cache_(CACHE_WRITE, address, (uint32_t *) &value);
 
+  if (!this->bus_enabled_)
+    return;  // driver previously failed to answer: don't touch the bus
+
   // Verify each write through the IFCNT datagram counter, which the driver
   // increments on every accepted write (datasheet 4.1.1). Same principle as
   // Klipper's tmc_uart: read IFCNT, write, confirm it advanced by exactly one.
@@ -177,6 +187,9 @@ int32_t TMC2209API::read_register(uint8_t address) {
   // Read from cache for registers with write-only access
   if (this->cache_(CACHE_READ, address, &value))
     return value;
+
+  if (!this->bus_enabled_)
+    return 0;  // driver previously failed to answer: don't touch the bus
 
   address = address & ADDRESS_MASK;
 

@@ -17,6 +17,13 @@ void TMC2209Stepper::setup() {
   ESP_LOGCONFIG(TAG, "Setting up TMC2209 Stepper...");
   TMC2209Component::setup();
 
+  // If the driver did not answer on UART, don't try to configure or drive it.
+  // The device still boots so the rest of the node (WiFi, API, logs) stays usable.
+  if (this->is_failed()) {
+    ESP_LOGE(TAG, "TMC2209 not responding on UART; stepper disabled (check wiring/baud_rate).");
+    return;
+  }
+
   this->high_freq_.start();
 
   this->write_field(VACTUAL_FIELD, 0);
