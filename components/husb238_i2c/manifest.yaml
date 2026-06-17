@@ -1,0 +1,7 @@
+version: 1.0
+type: component
+documentation: https://github.com/Trondle-Embedded-Systems/MicroDriver-software/tree/main/components/husb238_i2c
+dependencies:
+  - i2c
+codeowners:
+  - "@nicolastrondle"

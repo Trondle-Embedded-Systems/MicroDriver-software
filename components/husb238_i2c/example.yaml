@@ -1,0 +1,155 @@
+# Complete example configuration for HUSB238-002D USB Power Delivery Controller
+
+esphome:
+  name: "usb-pd-controller"
+  friendly_name: "USB PD Controller"
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: esp-idf
+
+# I2C configuration for HUSB238
+i2c:
+  - id: bus_a
+    sda: GPIO21
+    scl: GPIO22
+    frequency: 100kHz
+
+# Enable logging
+logger:
+  level: DEBUG
+
+# External components
+external_components:
+  - source:
+      type: local
+      path: .
+    components: [husb238_i2c]
+
+# HUSB238 USB PD Controller Configuration
+husb238_i2c:
+  - id: usb_pd_main
+    i2c_id: bus_a
+    address: 0x08
+    update_interval: 1s
+
+    # PDO Profile Configuration
+    # Configure voltage (V) and maximum current (A) for each PDO
+    pdo1_voltage: 5      # 5V PDO
+    pdo1_current: 3      # 3A max
+
+    pdo2_voltage: 9      # 9V PDO
+    pdo2_current: 2      # 2A max
+
+    pdo3_voltage: 15     # 15V PDO
+    pdo3_current: 2      # 2A max
+
+    pdo4_voltage: 20     # 20V PDO
+    pdo4_current: 1      # 1A max
+
+    # Sensors for monitoring USB PD parameters
+    output_voltage:
+      id: usb_pd_output_voltage
+      name: "USB PD Output Voltage"
+      unit_of_measurement: V
+      accuracy_decimals: 2
+      icon: mdi:flash
+      filters:
+        - throttle: 1s
+
+    output_current:
+      id: usb_pd_output_current
+      name: "USB PD Output Current"
+      unit_of_measurement: mA
+      accuracy_decimals: 0
+      icon: mdi:lightning-bolt
+      filters:
+        - throttle: 1s
+
+    input_voltage:
+      id: usb_pd_input_voltage
+      name: "USB PD Input Voltage"
+      unit_of_measurement: V
+      accuracy_decimals: 2
+      icon: mdi:power-plug
+      filters:
+        - throttle: 1s
+
+    # Switch to control USB PD output enable/disable
+    enable_output:
+      id: usb_pd_enable
+      name: "USB PD Output Enable"
+      icon: mdi:power
+      restore_mode: RESTORE_DEFAULT_OFF
+
+    # Number input to select voltage level
+    select_voltage:
+      id: usb_pd_select_voltage
+      name: "USB PD Select Voltage"
+      min_value: 5
+      max_value: 20
+      step: 1
+      unit_of_measurement: V
+      icon: mdi:flash
+      restore_value: true
+      initial_value: 5
+
+    # Number input to set maximum current
+    max_current:
+      id: usb_pd_max_current
+      name: "USB PD Max Current"
+      min_value: 0
+      max_value: 10
+      step: 0.1
+      unit_of_measurement: A
+      icon: mdi:lightning-bolt-outline
+      restore_value: true
+      initial_value: 1
+
+    # Monitor selected PDO
+    selected_pdo:
+      id: usb_pd_selected_pdo
+      name: "USB PD Selected PDO"
+      min_value: 1
+      max_value: 5
+      step: 1
+      icon: mdi:power-plug-outline
+      restore_value: true
+      initial_value: 1
+
+# Optional: Template sensors for power calculation
+template:
+  sensor:
+    - name: "USB PD Power"
+      unit_of_measurement: "W"
+      device_class: power
+      accuracy_decimals: 2
+      state: >
+        {% set voltage = states('sensor.usb_pd_output_voltage') | float(0) %}
+        {% set current_ma = states('sensor.usb_pd_output_current') | float(0) %}
+        {{ (voltage * current_ma / 1000) | round(2) }}
+
+# Automations
+automation:
+  # Log when voltage changes
+  - trigger:
+      platform: state
+      entity_id: sensor.usb_pd_output_voltage
+      for: 500ms
+    action:
+      - logger.log:
+          format: "USB PD voltage changed to %.2f V, current: %.0f mA"
+          args: ["id(usb_pd_output_voltage).state", "id(usb_pd_output_current).state"]
+
+  # Auto-enable output when voltage is selected
+  - trigger:
+      platform: state
+      entity_id: number.usb_pd_select_voltage
+    action:
+      - switch.turn_on:
+          id: usb_pd_enable
+      - logger.log:
+          format: "USB PD output enabled for %.0f V"
+          args: ["id(usb_pd_select_voltage).state"]
