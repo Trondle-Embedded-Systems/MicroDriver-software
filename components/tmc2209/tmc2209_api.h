@@ -97,6 +97,12 @@ class TMC2209API : public Parented<TMC2209Hub> {
 
   uint8_t get_address() { return this->address_; }
 
+  // When disabled, all register reads/writes short-circuit immediately instead of
+  // touching the bus. Used to gracefully give up after the driver fails to answer
+  // so a missing/mis-wired driver cannot stall boot or spam timeouts.
+  void set_bus_enabled(bool enabled) { this->bus_enabled_ = enabled; }
+  bool bus_enabled() const { return this->bus_enabled_; }
+
   // Write or read a register (all fields) or register field (single field within register)
   void write_register(uint8_t address, int32_t value);
   int32_t read_register(uint8_t address);
@@ -107,6 +113,7 @@ class TMC2209API : public Parented<TMC2209Hub> {
 
  protected:
   uint8_t address_;
+  bool bus_enabled_{true};
 
  private:
   uint8_t dirty_bits_[REGISTER_COUNT / 8] = {0};
@@ -120,6 +127,7 @@ class TMC2209API : public Parented<TMC2209Hub> {
   // Low-level single-wire UART helpers (see datasheet section 4)
   void flush_rx_();                                       // drop stale/echoed RX bytes
   void send_datagram_(const uint8_t *data, uint8_t len);  // transmit + discard self-echo
+  bool wait_available_(uint8_t count);                    // bounded wait for RX bytes
   bool read_register_once_(uint8_t address, int32_t *value_out);  // one read attempt
 };
 
