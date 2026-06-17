@@ -63,10 +63,23 @@ i2c:
 # UART configuration for TMC2209 (single-wire)
 uart:
   id: tmc_uart
-  # Single-wire half-duplex UART: TMC2209 PDN_UART and the ESP share one line
-  # (net UTX -> GPIO7), so rx_pin must be the SAME GPIO as tx_pin.
-  tx_pin: GPIO7
-  rx_pin: GPIO7
+  # Single-wire half-duplex UART: TMC2209 PDN_UART and the ESP share one line on
+  # GPIO7, so rx_pin and tx_pin are the SAME GPIO. ESP-IDF supports this ("single
+  # wire mode") but its UART docs require the shared pad to be open-drain + pull-up
+  # so both ends can drive the line without contention. The internal pull-up is
+  # weak (~45k); add an external 1k-4.7k pull-up to 3V3 (or lower baud_rate) if
+  # comms are unreliable at 500k.
+  tx_pin:
+    number: GPIO7
+    mode:
+      output: true
+      open_drain: true
+      pullup: true
+  rx_pin:
+    number: GPIO7
+    mode:
+      input: true
+      pullup: true
   baud_rate: 500000
 
 # TMC2209 Hub
