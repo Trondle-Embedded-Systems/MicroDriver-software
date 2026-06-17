@@ -71,12 +71,6 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   volatile time_t last_step_{0};
   /* */
 
-#ifdef USE_ESP32
-  TaskHandle_t step_task_handle_{nullptr};
-  volatile bool step_task_running_{false};
-  static void IRAM_ATTR HOT step_task_(void *arg);
-#endif
-
   // Auto-disable after reaching target
   uint32_t auto_disable_ms_{0};
   bool auto_disabled_{false};
