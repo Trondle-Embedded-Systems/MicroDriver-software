@@ -5,20 +5,21 @@ substitutions:
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
-  on_boot:
-    priority: 600
-    then:
-      - tmc2209.configure:
-          microsteps: 8
-          interpolation: true
-      - tmc2209.stallguard:
-          threshold: 50
-      - tmc2209.currents:
-          standstill_mode: freewheeling
-          irun: 16
-          ihold: 0
-          tpowerdown: 0
-          iholddelay: 0
+  # --- TMC2209 driver config disabled (UART not in use yet) ---
+  # on_boot:
+  #   priority: 600
+  #   then:
+  #     - tmc2209.configure:
+  #         microsteps: 8
+  #         interpolation: true
+  #     - tmc2209.stallguard:
+  #         threshold: 50
+  #     - tmc2209.currents:
+  #         standstill_mode: freewheeling
+  #         irun: 16
+  #         ihold: 0
+  #         tpowerdown: 0
+  #         iholddelay: 0
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -60,182 +61,159 @@ i2c:
   scl: GPIO21
   scan: true
 
-# UART configuration for TMC2209 (single-wire)
-uart:
-  id: tmc_uart
-  # Single-wire half-duplex UART: TMC2209 PDN_UART and the ESP share one line on
-  # GPIO7, so rx_pin and tx_pin are the SAME GPIO. ESP-IDF supports this ("single
-  # wire mode") but its UART docs require the shared pad to be open-drain + pull-up
-  # so both ends can drive the line without contention. The internal pull-up is
-  # weak (~45k); add an external 1k-4.7k pull-up to 3V3 (or lower baud_rate) if
-  # comms are unreliable at 500k.
-  # Both pins are the same physical GPIO7, so the pin-reuse guard must be told this
-  # is intentional (single-wire). Open-drain + pull-up is required by ESP-IDF so the
-  # shared line is never push-pull-driven against the TMC2209.
-  tx_pin:
-    number: GPIO7
-    mode:
-      input: true       # keep the input buffer enabled so RX can read the shared line
-      output: true
-      open_drain: true
-      pullup: true
-    ignore_pin_validation_error: true
-  rx_pin:
-    number: GPIO7
-    mode:
-      input: true
-      pullup: true
-    ignore_pin_validation_error: true
-  baud_rate: 500000
-
-# TMC2209 Hub
-tmc2209_hub:
-  id: tmc_hub
-  uart_id: tmc_uart
-
-# Stepper motor configuration
-stepper:
-  - platform: tmc2209
-    id: main_stepper
-    tmc2209_hub_id: tmc_hub
-    address: 0x00
-
-    # Motion parameters
-    max_speed: 900 steps/s
-    acceleration: 1500 steps/s^2
-    deceleration: 500 steps/s^2
-
-    # Pin configuration
-    step_pin: GPIO35
-    dir_pin: GPIO34
-    enn_pin: GPIO9
-    diag_pin: GPIO4
-
-    # Sense resistor (adjust based on your board)
-    rsense: 110 mOhm
-    vsense: false
-
-    # Configuration
-    config_dump_include_registers: true
-    # TMC2209 internal oscillator is ~12 MHz (value is in Hz).
-    # Used for VACTUAL velocity and TPOWERDOWN timing math.
-    clock_frequency: 12000000
-
-    # Sensorless homing
-    on_stall:
-      - logger.log: "Motor stalled!"
-      - stepper.stop: main_stepper
-
-    # Status monitoring
-    on_status:
-      - logger.log:
-          format: "Driver status update (code %d)"
-          args: ["code"]
-
-# Control buttons
-button:
-  - platform: template
-    name: Stop Motor
-    on_press:
-      - stepper.stop: main_stepper
-
-  - platform: template
-    name: Move 1000 Steps Forward
-    on_press:
-      - stepper.set_target:
-          id: main_stepper
-          target: !lambda return id(main_stepper)->current_position + 1000;
-
-  - platform: template
-    name: Move 1000 Steps Backward
-    on_press:
-      - stepper.set_target:
-          id: main_stepper
-          target: !lambda return id(main_stepper)->current_position - 1000;
-
-  - platform: template
-    name: Home Motor
-    on_press:
-      - logger.log: "Starting sensorless homing..."
-      - stepper.set_target:
-          id: main_stepper
-          target: -9999999
-
-  - platform: template
-    name: Reset Position
-    on_press:
-      - stepper.report_position:
-          id: main_stepper
-          position: 0
-
-# Target position control
-number:
-  - platform: template
-    name: Target Position
-    id: target_position
-    min_value: -100000
-    max_value: 100000
-    step: 100
-    unit_of_measurement: steps
-    lambda: return id(main_stepper)->current_position;
-    update_interval: 1s
-    set_action:
-      - stepper.set_target:
-          id: main_stepper
-          target: !lambda return x;
-
-# Sensors for monitoring
-sensor:
-  - platform: tmc2209
-    type: motor_load
-    name: Motor Load
-    update_interval: 250ms
-    icon: mdi:gauge
-
-  - platform: tmc2209
-    type: stallguard_result
-    name: StallGuard Result
-    update_interval: 250ms
-    icon: mdi:speedometer
-
-  - platform: tmc2209
-    type: actual_current
-    name: Actual Current
-    update_interval: 500ms
-    unit_of_measurement: mA
-    icon: mdi:current-dc
-
-  - platform: tmc2209
-    type: pwm_scale_sum
-    name: PWM Scale Sum
-    update_interval: 1s
-
-  - platform: template
-    name: Current Position
-    id: current_pos_sensor
-    unit_of_measurement: steps
-    lambda: return id(main_stepper)->current_position;
-    update_interval: 1s
-    icon: mdi:axis-arrow
+# =====================================================================
+# TMC2209 stepper / single-wire UART stack — DISABLED for now.
+# The UART link is not working/used yet, so the whole motor stack is
+# commented out to keep the node clean. Uncomment this block (and the
+# on_boot block above) to bring the stepper back.
+# =====================================================================
+#
+# # UART configuration for TMC2209 (single-wire on GPIO7, open-drain + pull-up)
+# uart:
+#   id: tmc_uart
+#   tx_pin:
+#     number: GPIO7
+#     mode:
+#       input: true
+#       output: true
+#       open_drain: true
+#       pullup: true
+#     ignore_pin_validation_error: true
+#   rx_pin:
+#     number: GPIO7
+#     mode:
+#       input: true
+#       pullup: true
+#     ignore_pin_validation_error: true
+#   baud_rate: 500000
+#
+# # TMC2209 Hub
+# tmc2209_hub:
+#   id: tmc_hub
+#   uart_id: tmc_uart
+#
+# # Stepper motor configuration
+# stepper:
+#   - platform: tmc2209
+#     id: main_stepper
+#     tmc2209_hub_id: tmc_hub
+#     address: 0x00
+#     max_speed: 900 steps/s
+#     acceleration: 1500 steps/s^2
+#     deceleration: 500 steps/s^2
+#     step_pin: GPIO35
+#     dir_pin: GPIO34
+#     enn_pin: GPIO9
+#     diag_pin: GPIO4
+#     rsense: 110 mOhm
+#     vsense: false
+#     config_dump_include_registers: true
+#     clock_frequency: 12000000
+#     on_stall:
+#       - logger.log: "Motor stalled!"
+#       - stepper.stop: main_stepper
+#     on_status:
+#       - logger.log:
+#           format: "Driver status update (code %d)"
+#           args: ["code"]
+#
+# # Control buttons
+# button:
+#   - platform: template
+#     name: Stop Motor
+#     on_press:
+#       - stepper.stop: main_stepper
+#   - platform: template
+#     name: Move 1000 Steps Forward
+#     on_press:
+#       - stepper.set_target:
+#           id: main_stepper
+#           target: !lambda return id(main_stepper)->current_position + 1000;
+#   - platform: template
+#     name: Move 1000 Steps Backward
+#     on_press:
+#       - stepper.set_target:
+#           id: main_stepper
+#           target: !lambda return id(main_stepper)->current_position - 1000;
+#   - platform: template
+#     name: Home Motor
+#     on_press:
+#       - logger.log: "Starting sensorless homing..."
+#       - stepper.set_target:
+#           id: main_stepper
+#           target: -9999999
+#   - platform: template
+#     name: Reset Position
+#     on_press:
+#       - stepper.report_position:
+#           id: main_stepper
+#           position: 0
+#
+# # Target position control
+# number:
+#   - platform: template
+#     name: Target Position
+#     id: target_position
+#     min_value: -100000
+#     max_value: 100000
+#     step: 100
+#     unit_of_measurement: steps
+#     lambda: return id(main_stepper)->current_position;
+#     update_interval: 1s
+#     set_action:
+#       - stepper.set_target:
+#           id: main_stepper
+#           target: !lambda return x;
+#
+# # Sensors for monitoring (TMC2209 + position)
+# sensor:
+#   - platform: tmc2209
+#     type: motor_load
+#     name: Motor Load
+#     update_interval: 250ms
+#     icon: mdi:gauge
+#   - platform: tmc2209
+#     type: stallguard_result
+#     name: StallGuard Result
+#     update_interval: 250ms
+#     icon: mdi:speedometer
+#   - platform: tmc2209
+#     type: actual_current
+#     name: Actual Current
+#     update_interval: 500ms
+#     unit_of_measurement: mA
+#     icon: mdi:current-dc
+#   - platform: tmc2209
+#     type: pwm_scale_sum
+#     name: PWM Scale Sum
+#     update_interval: 1s
+#   - platform: template
+#     name: Current Position
+#     id: current_pos_sensor
+#     unit_of_measurement: steps
+#     lambda: return id(main_stepper)->current_position;
+#     update_interval: 1s
+#     icon: mdi:axis-arrow
+#
+# # Switch for motor enable/disable
+# switch:
+#   - platform: template
+#     name: Motor Enable
+#     lambda: return true;
+#     turn_on_action:
+#       - tmc2209.enable:
+#           id: main_stepper
+#       - output.turn_on: status_led
+#     turn_off_action:
+#       - tmc2209.disable:
+#           id: main_stepper
+#       - output.turn_off: status_led
+# =====================================================================
 
 # Text sensors for diagnostics
 text_sensor:
   - platform: version
     name: ESPHome Version
-
-# Switch for motor enable/disable
-switch:
-  - platform: template
-    name: Motor Enable
-    lambda: return true;
-    turn_on_action:
-      - tmc2209.enable:
-          id: main_stepper
-      - output.turn_on: status_led
-    turn_off_action:
-      - tmc2209.disable:
-          id: main_stepper
-      - output.turn_off: status_led
 
 # Output pins
 output:
@@ -247,9 +225,11 @@ output:
 husb238_i2c:
   id: usb_pd
   output_voltage:
-    name: "USB Voltage"   
+    name: "USB Voltage"
 
 external_components:
   - source: github://Trondle-Embedded-Systems/MicroDriver-software
+    # tmc2209_hub / tmc2209 / stepper are only needed when the motor stack above
+    # is enabled; they are harmless to keep listed while it is commented out.
     components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
     refresh: 0s
