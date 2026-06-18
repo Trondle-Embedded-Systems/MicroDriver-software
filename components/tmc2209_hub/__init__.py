@@ -42,14 +42,20 @@ async def to_code(config):
     await uart.register_uart_device(var, config)
 
 
+# The hub id is Optional so a TMC2209 can also run standalone in STEP/DIR mode
+# without any UART. When omitted, no hub is attached and the register bus stays
+# disabled (see register_tmc2209_base).
 TMC2209_HUB_DEVICE_SCHEMA = cv.Schema(
     {
-        cv.GenerateID(CONF_TMC2209_HUB_ID): cv.use_id(TMC2209Hub),
+        cv.Optional(CONF_TMC2209_HUB_ID): cv.use_id(TMC2209Hub),
     }
 )
 
 
 async def register_tmc2209_hub_device(var, config):
+    if CONF_TMC2209_HUB_ID not in config:
+        return  # standalone STEP/DIR mode: no UART hub to attach to
+
     parent = await cg.get_variable(config[CONF_TMC2209_HUB_ID])
     await cg.register_parented(var, parent)
 
@@ -63,7 +69,7 @@ def final_validate(config):
     steppers_in_hub = [
         stepper
         for stepper in full_config.get(CONF_STEPPER, [])
-        if stepper[CONF_TMC2209_HUB_ID] == config[CONF_ID]
+        if stepper.get(CONF_TMC2209_HUB_ID) == config[CONF_ID]
     ]
 
     for i, stepper in enumerate(steppers_in_hub):

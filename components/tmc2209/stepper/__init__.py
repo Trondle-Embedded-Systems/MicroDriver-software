@@ -3,8 +3,10 @@ from esphome.core import EsphomeError
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import stepper
+from esphome.components.tmc2209_hub import CONF_TMC2209_HUB_ID
 from .. import (
     CONF_TMC2209_ID,
+    CONF_ENN_PIN,
     CONF_INDEX_PIN,
     CONF_DIR_PIN,
     CONF_STEP_PIN,
@@ -47,6 +49,32 @@ def validate_control_method_(config):
     return config
 
 
+def validate_standalone_(config):
+    # When no UART hub is attached the driver can only be operated standalone via
+    # STEP/DIR pulses, and ENN is the only way to enable/disable it (no UART TOFF).
+    if CONF_TMC2209_HUB_ID in config:
+        return config
+
+    if CONF_INDEX_PIN in config and not (
+        CONF_STEP_PIN in config and CONF_DIR_PIN in config
+    ):
+        raise cv.Invalid(
+            f"Without a {CONF_TMC2209_HUB_ID} (UART), {CONF_INDEX_PIN} serial control is "
+            f"unavailable; configure {CONF_STEP_PIN} and {CONF_DIR_PIN} instead."
+        )
+    if not (CONF_STEP_PIN in config and CONF_DIR_PIN in config):
+        raise cv.Invalid(
+            f"Without a {CONF_TMC2209_HUB_ID} (UART), both {CONF_STEP_PIN} and "
+            f"{CONF_DIR_PIN} are required to drive the motor."
+        )
+    if CONF_ENN_PIN not in config:
+        raise cv.Invalid(
+            f"Without a {CONF_TMC2209_HUB_ID} (UART), {CONF_ENN_PIN} is required to "
+            f"enable/disable the driver."
+        )
+    return config
+
+
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
@@ -70,6 +98,7 @@ CONFIG_SCHEMA = cv.All(
     ).extend(TMC2209_BASE_CONFIG_SCHEMA, stepper.STEPPER_SCHEMA),
     cv.has_none_or_all_keys(CONF_STEP_PIN, CONF_DIR_PIN),
     validate_control_method_,
+    validate_standalone_,
     validate_tmc2209_base,
 )
 

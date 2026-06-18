@@ -30,6 +30,16 @@ void TMC2209Component::setup() {
     this->diag_isr_store_.pin_triggered_ptr = &this->diag_triggered_;
   }
 
+  // Standalone STEP/DIR mode: no UART hub was configured, so the register bus is
+  // disabled. Skip all driver communication (the hub parent is null and must not
+  // be dereferenced) and run on the STEP/DIR/ENN pins alone. Microstepping and
+  // current are set in hardware (MS1/MS2 + VREF); no diagnostics are available.
+  if (!this->bus_enabled()) {
+    ESP_LOGCONFIG(TAG, "No UART hub configured; running standalone in STEP/DIR mode (no diagnostics).");
+    ESP_LOGCONFIG(TAG, "TMC2209 Component setup done.");
+    return;
+  }
+
   if (!this->read_field(VERSION_FIELD)) {
     this->status_set_error(LOG_STR("Failed to communicate with driver"));
     this->mark_failed();

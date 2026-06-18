@@ -69,6 +69,10 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   volatile bool step_state_ = false;
   volatile Direction direction_{Direction::STANDSTILL};
   volatile time_t last_step_{0};
+  // DEDGE (one microstep per edge) can only be programmed over UART. Without a
+  // hub it stays at the driver default (step on rising edge), so the loop must
+  // emit a full pulse per microstep instead of toggling a single edge.
+  bool dedge_active_{false};
   /* */
 
   // Auto-disable after reaching target
