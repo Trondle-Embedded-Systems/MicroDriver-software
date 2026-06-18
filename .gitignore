@@ -1,0 +1,11 @@
+# ESPHome build output / caches
+.esphome/
+**/.esphome/
+secrets.yaml
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Editor / OS
+.DS_Store
