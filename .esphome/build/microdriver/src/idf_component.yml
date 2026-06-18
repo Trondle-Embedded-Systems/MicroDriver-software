@@ -1,0 +1,5 @@
+dependencies:
+  espressif/mdns:
+    version: 1.11.0
+  bblanchon/arduinojson:
+    version: 7.4.2

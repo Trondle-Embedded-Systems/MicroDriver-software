@@ -1,0 +1,227 @@
+substitutions:
+  device_name: microdriver
+  friendly_name: MicroDriver Controller
+esphome:
+  name: microdriver
+  friendly_name: MicroDriver Controller
+  min_version: 2026.5.3
+  build_path: build\microdriver
+  platformio_options: {}
+  environment_variables: {}
+  includes: []
+  includes_c: []
+  libraries: []
+  name_add_mac_suffix: false
+  debug_scheduler: false
+  areas: []
+  devices: []
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: ESP32S3
+  framework:
+    type: esp-idf
+    version: 5.5.4
+    sdkconfig_options: {}
+    log_level: ERROR
+    advanced:
+      compiler_optimization: SIZE
+      enable_idf_experimental_features: false
+      enable_lwip_assert: true
+      ignore_efuse_custom_mac: false
+      ignore_efuse_mac_crc: false
+      sram1_as_iram: false
+      enable_lwip_mdns_queries: true
+      enable_lwip_bridge_interface: false
+      enable_lwip_tcpip_core_locking: true
+      enable_lwip_check_thread_safety: true
+      disable_libc_locks_in_iram: true
+      disable_vfs_support_termios: true
+      disable_vfs_support_select: true
+      disable_vfs_support_dir: true
+      freertos_in_iram: false
+      ringbuf_in_iram: false
+      heap_in_iram: false
+      execute_from_psram: false
+      loop_task_stack_size: 8192
+      enable_ota_rollback: true
+      use_full_certificate_bundle: false
+      include_builtin_idf_components: []
+      enable_full_printf: false
+      disable_debug_stubs: true
+      disable_ocd_aware: true
+      disable_usb_serial_jtag_secondary: true
+      disable_dev_null_vfs: true
+      disable_mbedtls_peer_cert: true
+      disable_mbedtls_pkcs7: true
+      disable_regi2c_in_iram: true
+      adc_oneshot_in_iram: false
+      disable_fatfs: true
+    components: []
+    platform_version: https://github.com/pioarduino/platform-espressif32/releases/download/55.03.38-1/platform-espressif32.zip
+    source: pioarduino/framework-espidf@https://github.com/pioarduino/esp-idf/releases/download/v5.5.4/esp-idf-v5.5.4.tar.xz
+  flash_size: 4MB
+  watchdog_timeout: 5s
+  cpu_frequency: 240MHZ
+wifi:
+  ap:
+    ssid: microdriver_AP
+    password: HNA.axk0pue5acq7bmk
+    id: wifi_wifiap_id
+    ap_timeout: 90s
+  id: wifi_wificomponent_id
+  domain: .local
+  reboot_timeout: 15min
+  power_save_mode: LIGHT
+  fast_connect: false
+  enable_btm: false
+  enable_rrm: false
+  passive_scan: false
+  enable_on_boot: true
+  post_connect_roaming: true
+  min_auth_mode: WPA2
+  networks:
+    - ssid: tsu3
+      password: greatScott$z4a
+      id: wifi_wifiap_id_2
+      priority: 0
+  use_address: microdriver.local
+logger:
+  level: INFO
+  baud_rate: 115200
+  id: logger_logger_id
+  tx_buffer_size: 512
+  deassert_rts_dtr: false
+  task_log_buffer_size: 768
+  hardware_uart: USB_SERIAL_JTAG
+  logs: {}
+  runtime_tag_levels: false
+ota:
+  - platform: esphome
+    password: juj-kaz-htq0cxd1HAE
+    id: esphome_esphomeotacomponent_id
+    version: 2
+    port: 3232
+    allow_partition_access: false
+api:
+  encryption:
+    key: o7Gw4u3rznufqLhGdJ78QaaLX7pkXAbzNB01R3uvNfE=
+  id: api_apiserver_id
+  port: 6053
+  reboot_timeout: 15min
+  batch_delay: 100ms
+  custom_services: false
+  homeassistant_services: false
+  homeassistant_states: false
+  listen_backlog: 4
+  max_connections: 5
+  max_send_queue: 8
+web_server:
+  port: 80
+  id: web_server_webserver_id
+  version: 2
+  enable_private_network_access: true
+  web_server_base_id: web_server_base_webserverbase_id
+  include_internal: false
+  log: true
+  compression: gzip
+  css_url: ''
+  js_url: https://oi.esphome.io/v2/www.js
+i2c:
+  - id: i2c_bus
+    sda: 17
+    scl: 21
+    scan: true
+    sda_pullup_enabled: true
+    scl_pullup_enabled: true
+    frequency: 50000.0
+text_sensor:
+  - platform: version
+    name: ESPHome Version
+    disabled_by_default: false
+    icon: mdi:new-box
+    entity_category: diagnostic
+    id: version_versiontextsensor_id
+    hide_hash: false
+    hide_timestamp: false
+    _entity_register_method: text_sensor
+    _entity_name: ESPHome Version
+    _entity_object_id_hash: 2314437119
+    _entity_disabled_by_default: 0
+    _entity_category: 2
+    _entity_icon_idx: 1
+    _entity_dc_idx: 0
+output:
+  - platform: gpio
+    pin:
+      number: 18
+      mode:
+        output: true
+        input: false
+        open_drain: false
+        pullup: false
+        pulldown: false
+      id: esp32_esp32internalgpiopin_id
+      inverted: false
+      ignore_pin_validation_error: false
+      ignore_strapping_warning: false
+      drive_strength: 20.0
+    id: status_led
+    inverted: false
+husb238_i2c:
+  id: usb_pd
+  output_voltage:
+    name: USB Voltage
+    disabled_by_default: false
+    force_update: false
+    id: husb238_i2c_outputvoltagesensor_id
+    unit_of_measurement: V
+    accuracy_decimals: 2
+    state_class: measurement
+    _entity_register_method: sensor
+    _entity_name: USB Voltage
+    _entity_object_id_hash: 1558306530
+    _entity_disabled_by_default: 0
+    _entity_icon_idx: 0
+    _entity_dc_idx: 0
+    _entity_uom_idx: 1
+  pdo1_voltage: 5
+  pdo1_current: 3
+  update_interval: 1s
+  i2c_id: i2c_bus
+  address: 0x08
+external_components:
+  - source:
+      url: https://github.com/Trondle-Embedded-Systems/MicroDriver-software.git
+      type: git
+    components:
+      - tmc2209_hub
+      - tmc2209
+      - stepper
+      - husb238_i2c
+    refresh: 0s
+preferences:
+  id: preferences_intervalsyncer_id
+  flash_write_interval: 60s
+network:
+  enable_ipv6: false
+  min_ipv6_addr_count: 0
+safe_mode:
+  id: safe_mode_safemodecomponent_id
+  boot_is_good_after: 1min
+  disabled: false
+  num_attempts: 10
+  reboot_timeout: 5min
+md5: {}
+watchdog: {}
+sha256: {}
+socket:
+  implementation: bsd_sockets
+json: {}
+web_server_base:
+  id: web_server_base_webserverbase_id
+sensor: []
+mdns:
+  id: mdns_mdnscomponent_id
+  disabled: false
+  services: []
+web_server_idf: {}

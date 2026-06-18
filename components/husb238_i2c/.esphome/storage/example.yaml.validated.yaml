@@ -1,0 +1,127 @@
+esphome:
+  name: usb-pd-controller
+  friendly_name: USB PD Controller
+  min_version: 2026.5.3
+  build_path: build\usb-pd-controller
+  platformio_options: {}
+  environment_variables: {}
+  includes: []
+  includes_c: []
+  libraries: []
+  name_add_mac_suffix: false
+  debug_scheduler: false
+  areas: []
+  devices: []
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: ESP32S3
+  framework:
+    type: esp-idf
+    version: 5.5.4
+    sdkconfig_options: {}
+    log_level: ERROR
+    advanced:
+      compiler_optimization: SIZE
+      enable_idf_experimental_features: false
+      enable_lwip_assert: true
+      ignore_efuse_custom_mac: false
+      ignore_efuse_mac_crc: false
+      sram1_as_iram: false
+      enable_lwip_dhcp_server: false
+      enable_lwip_mdns_queries: true
+      enable_lwip_bridge_interface: false
+      enable_lwip_tcpip_core_locking: true
+      enable_lwip_check_thread_safety: true
+      disable_libc_locks_in_iram: true
+      disable_vfs_support_termios: true
+      disable_vfs_support_select: true
+      disable_vfs_support_dir: true
+      freertos_in_iram: false
+      ringbuf_in_iram: false
+      heap_in_iram: false
+      execute_from_psram: false
+      loop_task_stack_size: 8192
+      enable_ota_rollback: false
+      use_full_certificate_bundle: false
+      include_builtin_idf_components: []
+      enable_full_printf: false
+      disable_debug_stubs: true
+      disable_ocd_aware: true
+      disable_usb_serial_jtag_secondary: true
+      disable_dev_null_vfs: true
+      disable_mbedtls_peer_cert: true
+      disable_mbedtls_pkcs7: true
+      disable_regi2c_in_iram: true
+      adc_oneshot_in_iram: false
+      disable_fatfs: true
+    components: []
+    platform_version: https://github.com/pioarduino/platform-espressif32/releases/download/55.03.38-1/platform-espressif32.zip
+    source: pioarduino/framework-espidf@https://github.com/pioarduino/esp-idf/releases/download/v5.5.4/esp-idf-v5.5.4.tar.xz
+  flash_size: 4MB
+  watchdog_timeout: 5s
+  cpu_frequency: 240MHZ
+i2c:
+  - id: bus_a
+    sda: 8
+    scl: 9
+    frequency: 100000.0
+    sda_pullup_enabled: true
+    scl_pullup_enabled: true
+    scan: true
+logger:
+  level: DEBUG
+  id: logger_logger_id
+  baud_rate: 115200
+  tx_buffer_size: 512
+  deassert_rts_dtr: false
+  task_log_buffer_size: 768
+  hardware_uart: USB_SERIAL_JTAG
+  logs: {}
+  runtime_tag_levels: false
+external_components:
+  - source:
+      path: C:\Users\Nico\Documents\GitHub\MicroDriver-software\components\husb238_i2c\..
+      type: local
+    components:
+      - husb238_i2c
+    refresh: 1d
+husb238_i2c:
+  id: usb_pd_main
+  i2c_id: bus_a
+  address: 0x08
+  update_interval: 1s
+  request_voltage: 20
+  output_voltage:
+    name: USB PD Negotiated Voltage
+    disabled_by_default: false
+    force_update: false
+    id: husb238_i2c_outputvoltagesensor_id
+    unit_of_measurement: V
+    accuracy_decimals: 2
+    state_class: measurement
+    _entity_register_method: sensor
+    _entity_name: USB PD Negotiated Voltage
+    _entity_object_id_hash: 757788800
+    _entity_disabled_by_default: 0
+    _entity_icon_idx: 0
+    _entity_dc_idx: 0
+    _entity_uom_idx: 1
+  output_current:
+    name: USB PD Max Current
+    disabled_by_default: false
+    force_update: false
+    id: husb238_i2c_outputcurrentsensor_id
+    unit_of_measurement: mA
+    accuracy_decimals: 0
+    state_class: measurement
+    _entity_register_method: sensor
+    _entity_name: USB PD Max Current
+    _entity_object_id_hash: 3235245381
+    _entity_disabled_by_default: 0
+    _entity_icon_idx: 0
+    _entity_dc_idx: 0
+    _entity_uom_idx: 2
+preferences:
+  id: preferences_intervalsyncer_id
+  flash_write_interval: 60s
+sensor: []
