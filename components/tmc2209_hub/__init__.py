@@ -15,6 +15,10 @@ _LOGGER = logging.getLogger(__name__)
 CODEOWNERS = ["@slimcdk"]
 
 MULTI_CONF = True
+# When the hub is only AUTO_LOADed (e.g. a tmc2209 stepper running standalone in
+# STEP/DIR mode without a `tmc2209_hub:` block), do NOT inject a default empty
+# instance — an empty hub would fail validation because it requires a UART bus.
+MULTI_CONF_NO_DEFAULT = True
 
 CONF_TMC2209_HUB = "tmc2209_hub"
 CONF_TMC2209_HUB_ID = "tmc2209_hub_id"
