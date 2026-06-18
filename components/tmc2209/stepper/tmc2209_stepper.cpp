@@ -3,6 +3,7 @@
 
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
+#include "esphome/core/hal.h"
 
 namespace esphome {
 namespace tmc2209 {
@@ -31,6 +32,10 @@ void TMC2209Stepper::setup() {
   if (this->control_method_ == ControlMethod::PULSES_CONTROL) {
     this->write_field(MULTISTEP_FILT_FIELD, false);
     this->write_field(DEDGE_FIELD, true);
+    // The DEDGE write above only reaches the driver when the UART bus is enabled.
+    // In standalone mode it is a no-op, so the driver keeps DEDGE off and the loop
+    // must emit a full STEP pulse per microstep (see loop()).
+    this->dedge_active_ = this->bus_enabled();
   }
 
   if (this->control_method_ == ControlMethod::SERIAL_CONTROL) {
@@ -82,8 +87,18 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
           this->dir_pin_->digital_write(this->current_direction == Direction::BACKWARD);
           this->direction_ = this->current_direction;
         }
-        this->step_pin_->digital_write(this->step_state_);
-        this->step_state_ = !this->step_state_;
+        if (this->dedge_active_) {
+          // DEDGE enabled (UART): every edge is one microstep, so just toggle.
+          this->step_pin_->digital_write(this->step_state_);
+          this->step_state_ = !this->step_state_;
+        } else {
+          // Standalone (no UART): DEDGE is off, so only rising edges step. Emit a
+          // full pulse per microstep. The high time only needs to exceed the
+          // driver minimum (~100 ns); 3 us is safe and negligible at these rates.
+          this->step_pin_->digital_write(true);
+          delayMicroseconds(3);
+          this->step_pin_->digital_write(false);
+        }
         this->current_position += (int32_t) this->current_direction;
         this->last_step_ = now;
       }

@@ -20,6 +20,11 @@ _LOGGER = logging.getLogger(__name__)
 
 CODEOWNERS = ["@slimcdk"]
 
+# `tmc2209_hub` is auto-loaded so its headers/types are available. It is NOT
+# instantiated unless a `tmc2209_hub:` block is configured, so standalone
+# STEP/DIR mode needs no `uart:` bus. The UART access in tmc2209_api.cpp is all
+# inline forwarders + virtual dispatch, so nothing from the uart component needs
+# to be linked when running without a hub.
 AUTO_LOAD = ["tmc2209_hub"]
 
 CONF_TMC2209 = "tmc2209"
@@ -143,6 +148,12 @@ async def register_tmc2209_base(var, config):
 
     await cg.register_component(var, config)
     await tmc2209_hub.register_tmc2209_hub_device(var, config)
+
+    if tmc2209_hub.CONF_TMC2209_HUB_ID not in config:
+        # No UART hub configured: run standalone in STEP/DIR pulse mode. Disabling
+        # the register bus makes every read/write a safe no-op (the hub parent is
+        # never dereferenced) so no UART/diagnostics are attempted at runtime.
+        cg.add(var.set_bus_enabled(False))
 
     cg.add(var.set_address(config[CONF_ADDRESS]))
     cg.add(var.set_clk_freq(config[CONF_CLOCK_FREQUENCY]))

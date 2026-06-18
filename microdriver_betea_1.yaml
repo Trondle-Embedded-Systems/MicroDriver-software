@@ -2,26 +2,22 @@ substitutions:
   device_name: microdriver
   friendly_name: MicroDriver Controller
 
+external_components:
+  - source: github://Trondle-Embedded-Systems/MicroDriver-software
+    # `stepper` is the base used by the built-in `a4988` platform (active).
+    # `tmc2209_hub` / `tmc2209` are only needed if you enable the UART stack
+    # above; harmless to keep listed while it stays commented out.
+    components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
+    refresh: 0s
+
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
-  # --- TMC2209 UART driver config disabled (UART not in use yet) ---
-  # The TMC2209 is driven in standalone STEP/DIR mode below. The register
-  # config below only applies once the UART/tmc2209 stack is enabled.
-  # on_boot:
-  #   priority: 600
-  #   then:
-  #     - tmc2209.configure:
-  #         microsteps: 8
-  #         interpolation: true
-  #     - tmc2209.stallguard:
-  #         threshold: 50
-  #     - tmc2209.currents:
-  #         standstill_mode: freewheeling
-  #         irun: 16
-  #         ihold: 0
-  #         tpowerdown: 0
-  #         iholddelay: 0
+  # --- UART / TMC2209 register config intentionally NOT used here ---
+  # The motor runs in standalone STEP/DIR mode (no UART), so there is no
+  # on_boot register configuration. Microstepping and current are set in
+  # hardware (MS1/MS2 pins + VREF). To later enable UART diagnostics, see
+  # the commented TMC2209 UART stack at the bottom of this file.
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -64,25 +60,23 @@ i2c:
   scan: true
 
 # =====================================================================
-# Standalone STEP/DIR control (no UART) — BASIC FEATURE, ENABLED.
-# The TMC2209 in standalone mode is just a step/dir driver: microstepping
-# and current are set in hardware (MS1/MS2 pins + VREF), and ESPHome only
-# pulses STEP/DIR/EN. This uses the built-in `a4988` platform, which works
-# with any generic step/dir driver including the TMC2209.
-# No diagnostics (stallguard / current sensing) are available without UART.
+# TMC2209 standalone STEP/DIR control (NO UART) — for bring-up / PCB testing.
+# This uses the `tmc2209` platform WITHOUT a `tmc2209_hub` / `uart`, so the
+# component runs purely on STEP/DIR/ENN pins. Microstepping and current are
+# set in hardware (MS1/MS2 pins + VREF); no UART diagnostics (stallguard /
+# current sensing) are available in this mode. Add a `tmc2209_hub` + `uart`
+# and `tmc2209_hub_id:` later to unlock register config and diagnostics
+# (see the commented full UART stack at the bottom of this file).
 # =====================================================================
 
-# Stepper motor configuration (standalone step/dir)
+# Stepper motor configuration (TMC2209 standalone step/dir, no UART)
 stepper:
-  - platform: a4988
+  - platform: tmc2209
     id: main_stepper
     step_pin: GPIO35
     dir_pin: GPIO34
-    # TMC2209 EN pin is active-low (LOW = enabled), so invert the sleep pin
-    # which a4988 drives HIGH when the motor is awake.
-    sleep_pin:
-      number: GPIO9
-      inverted: true
+    # ENN is active-low and required in standalone mode (no UART to toggle TOFF).
+    enn_pin: GPIO9
     max_speed: 900 steps/s
     acceleration: 1500 steps/s^2
     deceleration: 500 steps/s^2
@@ -139,10 +133,12 @@ sensor:
     icon: mdi:axis-arrow
 
 # =====================================================================
-# TMC2209 stepper / single-wire UART stack — DISABLED for now.
-# The UART link is not working/used yet, so the whole motor stack is
-# commented out to keep the node clean. Uncomment this block (and the
-# on_boot block above) to bring the stepper back.
+# OPTIONAL: TMC2209 single-wire UART stack — DISABLED.
+# Enable this block (and remove the a4988 `stepper:` above) once the UART
+# link is wired/working to get StallGuard, current sensing and register
+# configuration. It is sourced from this repo's vendored, ESPHome-compatible
+# tmc2209 components (upstream slimcdk is currently incompatible with this
+# ESPHome version — its codegen is missing the cg.templatable() wrappers).
 # =====================================================================
 #
 # # UART configuration for TMC2209 (single-wire on GPIO7, open-drain + pull-up)
@@ -164,12 +160,10 @@ sensor:
 #     ignore_pin_validation_error: true
 #   baud_rate: 500000
 #
-# # TMC2209 Hub
 # tmc2209_hub:
 #   id: tmc_hub
 #   uart_id: tmc_uart
 #
-# # Stepper motor configuration
 # stepper:
 #   - platform: tmc2209
 #     id: main_stepper
@@ -184,107 +178,7 @@ sensor:
 #     diag_pin: GPIO4
 #     rsense: 110 mOhm
 #     vsense: false
-#     config_dump_include_registers: true
 #     clock_frequency: 12000000
-#     on_stall:
-#       - logger.log: "Motor stalled!"
-#       - stepper.stop: main_stepper
-#     on_status:
-#       - logger.log:
-#           format: "Driver status update (code %d)"
-#           args: ["code"]
-#
-# # Control buttons
-# button:
-#   - platform: template
-#     name: Stop Motor
-#     on_press:
-#       - stepper.stop: main_stepper
-#   - platform: template
-#     name: Move 1000 Steps Forward
-#     on_press:
-#       - stepper.set_target:
-#           id: main_stepper
-#           target: !lambda return id(main_stepper)->current_position + 1000;
-#   - platform: template
-#     name: Move 1000 Steps Backward
-#     on_press:
-#       - stepper.set_target:
-#           id: main_stepper
-#           target: !lambda return id(main_stepper)->current_position - 1000;
-#   - platform: template
-#     name: Home Motor
-#     on_press:
-#       - logger.log: "Starting sensorless homing..."
-#       - stepper.set_target:
-#           id: main_stepper
-#           target: -9999999
-#   - platform: template
-#     name: Reset Position
-#     on_press:
-#       - stepper.report_position:
-#           id: main_stepper
-#           position: 0
-#
-# # Target position control
-# number:
-#   - platform: template
-#     name: Target Position
-#     id: target_position
-#     min_value: -100000
-#     max_value: 100000
-#     step: 100
-#     unit_of_measurement: steps
-#     lambda: return id(main_stepper)->current_position;
-#     update_interval: 1s
-#     set_action:
-#       - stepper.set_target:
-#           id: main_stepper
-#           target: !lambda return x;
-#
-# # Sensors for monitoring (TMC2209 + position)
-# sensor:
-#   - platform: tmc2209
-#     type: motor_load
-#     name: Motor Load
-#     update_interval: 250ms
-#     icon: mdi:gauge
-#   - platform: tmc2209
-#     type: stallguard_result
-#     name: StallGuard Result
-#     update_interval: 250ms
-#     icon: mdi:speedometer
-#   - platform: tmc2209
-#     type: actual_current
-#     name: Actual Current
-#     update_interval: 500ms
-#     unit_of_measurement: mA
-#     icon: mdi:current-dc
-#   - platform: tmc2209
-#     type: pwm_scale_sum
-#     name: PWM Scale Sum
-#     update_interval: 1s
-#   - platform: template
-#     name: Current Position
-#     id: current_pos_sensor
-#     unit_of_measurement: steps
-#     lambda: return id(main_stepper)->current_position;
-#     update_interval: 1s
-#     icon: mdi:axis-arrow
-#
-# # Switch for motor enable/disable
-# switch:
-#   - platform: template
-#     name: Motor Enable
-#     lambda: return true;
-#     turn_on_action:
-#       - tmc2209.enable:
-#           id: main_stepper
-#       - output.turn_on: status_led
-#     turn_off_action:
-#       - tmc2209.disable:
-#           id: main_stepper
-#       - output.turn_off: status_led
 # =====================================================================
 
 # Text sensors for diagnostics
@@ -304,10 +198,4 @@ husb238_i2c:
   output_voltage:
     name: "USB Voltage"
 
-external_components:
-  - source: github://Trondle-Embedded-Systems/MicroDriver-software
-    # `stepper` provides the base used by the built-in `a4988` platform (active).
-    # `tmc2209_hub` / `tmc2209` are only needed when the UART motor stack above
-    # is enabled; they are harmless to keep listed while it is commented out.
-    components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
-    refresh: 0s
+
