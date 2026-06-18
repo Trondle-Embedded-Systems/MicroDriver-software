@@ -237,7 +237,10 @@ output:
 
 husb238_i2c:
   id: usb_pd
+  request_voltage: 20      # request 20V from the PD source (must be offered by the adapter)
   output_voltage:
     name: "USB Voltage"
+  output_current:
+    name: "USB Current"
 
 

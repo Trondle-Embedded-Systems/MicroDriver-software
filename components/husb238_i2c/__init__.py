@@ -45,9 +45,23 @@ CONFIG_SCHEMA = cv.Schema({
         accuracy_decimals=2,
         state_class=STATE_CLASS_MEASUREMENT,
     ),
-    cv.Optional("pdo1_voltage", default=5): cv.int_range(5, 48),
-    cv.Optional("pdo1_current", default=3): cv.int_range(0, 10),
+    # Voltage to request from the attached USB-PD source. The source must
+    # actually advertise this PDO or the request is ignored by the adapter.
+    # Omit (or set 0) to leave the chip in auto mode and not request anything.
+    cv.Optional("request_voltage"): cv.one_of(0, 5, 9, 12, 15, 18, 20, int=True),
 }).extend(cv.polling_component_schema("1s")).extend(i2c.i2c_device_schema(0x08))
+
+# Maps a requested voltage (V) to the HUSB238 SRC_PDO selection code (top 4
+# bits of register 0x08). Note the non-contiguous jump at 15V.
+_VOLTAGE_TO_SELECTION = {
+    0: 0x0,
+    5: 0x1,
+    9: 0x2,
+    12: 0x3,
+    15: 0x8,
+    18: 0x9,
+    20: 0xA,
+}
 
 
 async def to_code(config):
@@ -70,10 +84,6 @@ async def to_code(config):
         await cg.register_parented(sens, var)
         cg.add(var.set_input_voltage_sensor(sens))
 
-    for i in range(5):
-        volt_key = f"pdo{i+1}_voltage"
-        curr_key = f"pdo{i+1}_current"
-        if volt_key in config:
-            cg.add(var.set_pdo_voltage(i, config[volt_key]))
-        if curr_key in config:
-            cg.add(var.set_pdo_current(i, config[curr_key]))
+    if "request_voltage" in config:
+        selection = _VOLTAGE_TO_SELECTION[config["request_voltage"]]
+        cg.add(var.set_request_voltage(selection))
