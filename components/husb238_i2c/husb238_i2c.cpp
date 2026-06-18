@@ -136,7 +136,7 @@ bool HUSB238::read_register(uint8_t reg, uint8_t *data, size_t len) {
 }
 
 bool HUSB238::write_register(uint8_t reg, uint8_t value) {
-  const i2c::ErrorCode ret = i2c::I2CDevice::write_register(reg, &value, 1, true);
+  const i2c::ErrorCode ret = i2c::I2CDevice::write_register(reg, &value, 1);
   return ret == i2c::ErrorCode::NO_ERROR;
 }
 
