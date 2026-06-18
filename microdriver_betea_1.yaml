@@ -106,7 +106,7 @@ button:
           id: main_stepper
           position: 0
 
-# Target position control
+# Target position + speed control
 number:
   - platform: template
     name: Target Position
@@ -121,6 +121,48 @@ number:
       - stepper.set_target:
           id: main_stepper
           target: !lambda return x;
+  # Runtime-adjustable max speed (steps/s). The stepper has no speed getter, so
+  # this is an optimistic control that remembers its value and applies it via
+  # stepper.set_speed. `initial_value` matches the `max_speed:` set above.
+  - platform: template
+    name: Max Speed
+    id: max_speed
+    min_value: 50
+    max_value: 2000
+    step: 50
+    initial_value: 900
+    unit_of_measurement: steps/s
+    icon: mdi:speedometer
+    optimistic: true
+    mode: box
+    set_action:
+      - stepper.set_speed:
+          id: main_stepper
+          speed: !lambda return x;
+  # Live jog / velocity control. Drag to run the motor CONTINUOUSLY at the set
+  # speed and direction: positive = forward, negative = backward, 0 = stop.
+  # Changing the value while running updates the speed on the fly (the motion
+  # loop re-ramps toward the new max speed). Implemented by aiming at a far-away
+  # target and adjusting max_speed, since the stepper is position-based.
+  - platform: template
+    name: Jog Speed
+    id: jog_speed
+    min_value: -2000
+    max_value: 2000
+    step: 50
+    initial_value: 0
+    unit_of_measurement: steps/s
+    icon: mdi:gauge
+    optimistic: true
+    mode: slider
+    set_action:
+      - lambda: |-
+          if (x == 0) {
+            id(main_stepper)->stop();
+          } else {
+            id(main_stepper)->set_max_speed(fabs(x));
+            id(main_stepper)->set_target(x > 0 ? 1000000000 : -1000000000);
+          }
 
 # Position monitoring
 sensor:
