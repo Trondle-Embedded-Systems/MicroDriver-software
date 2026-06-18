@@ -8,16 +8,17 @@ Works with any stepper platform in this library (TMC2209, TMC2208, TMC2300, TMC5
 
 ## How it works
 
-1. On every `update_interval` the component reads the encoder position sensor.
-2. It tracks wrap-arounds (multi-turn) by detecting jumps larger than half a revolution.
-3. It converts the encoder reading to steps using `steps_per_revolution / encoder_counts_per_revolution`.
-4. If `|encoder_steps − motor.current_position| > correction_threshold`, it sets `motor.current_position = encoder_steps`.
-5. The stepper's existing acceleration profile then drives the motor from the corrected position back to its original `target_position`.
+1.  On every `update_interval` the component reads the encoder position sensor.
+2.  It tracks wrap-arounds (multi-turn) by detecting jumps larger than half a revolution.
+3.  It converts the encoder reading to steps using `steps_per_revolution / encoder_counts_per_revolution`.
+4.  If `|encoder_steps − motor.current_position| > correction_threshold`, it sets `motor.current_position = encoder_steps`.
+5.  The stepper's existing acceleration profile then drives the motor from the corrected position back to its original `target_position`.
 
 This handles:
-- **Missed steps** — any skipped steps are corrected on the next update
-- **Stall recovery** — once obstruction is cleared the motor resumes from its actual position
-- **Startup alignment** — optionally syncs `current_position` to encoder on boot (`initial_sync: true`)
+
+*   **Missed steps** — any skipped steps are corrected on the next update
+*   **Stall recovery** — once obstruction is cleared the motor resumes from its actual position
+*   **Startup alignment** — optionally syncs `current_position` to encoder on boot (`initial_sync: true`)
 
 > **Idle behavior**: wrap-around tracking always runs (so the encoder position stays accurate even while parked). Correction continues for `settle_window` after the motor reaches its target (useful to catch the last few missed steps during deceleration), then stops to avoid the motor chasing encoder noise/drift while parked. Set `settle_window: 0s` to stop correcting immediately on arrival.
 
@@ -40,7 +41,8 @@ AS5600 DIR  → GND (clockwise) or 3.3 V (counter-clockwise)
 ## Setup
 
 Import the component:
-```yaml
+
+```
 external_components:
   - source: github://Trondle-Embedded-Systems/MicroDriver-software
     components: [tmc2209_hub, tmc2209, stepper, stepper_closed_loop]
@@ -52,7 +54,7 @@ external_components:
 
 ### Minimal example — TMC2209 with AS5600
 
-```yaml
+```
 i2c:
   sda: GPIO8
   scl: GPIO9
@@ -98,7 +100,7 @@ stepper_closed_loop:
 
 ### With auto-disable (motor de-energises when idle)
 
-```yaml
+```
 stepper_closed_loop:
   stepper_id: motor
   position_sensor: encoder_position
@@ -109,7 +111,7 @@ stepper_closed_loop:
 
 ### With error monitoring sensor
 
-```yaml
+```
 stepper_closed_loop:
   stepper_id: motor
   position_sensor: encoder_position
@@ -124,10 +126,10 @@ stepper_closed_loop:
 ## Configuration reference
 
 | Key | Required | Default | Description |
-|-----|----------|---------|-------------|
+| --- | --- | --- | --- |
 | `stepper_id` | **yes** | — | ID of any stepper component |
 | `position_sensor` | **yes** | — | ID of the encoder position sensor (AS5600 `position` sub-sensor recommended) |
-| `steps_per_revolution` | **yes** | — | Motor steps per encoder revolution (full_steps × microstepping) |
+| `steps_per_revolution` | **yes** | — | Motor steps per encoder revolution (full\_steps × microstepping) |
 | `encoder_counts_per_revolution` | no | `4096` | Encoder counts per revolution (AS5600 = 4096) |
 | `correction_threshold` | no | `10` | Minimum step error to trigger re-sync (deadband) |
 | `max_correction` | no | `500` | Maximum plausible error in steps; larger jumps are discarded as noise |
@@ -140,7 +142,7 @@ stepper_closed_loop:
 ### `steps_per_revolution` examples
 
 | Motor | Microstepping | Value |
-|-------|--------------|-------|
+| --- | --- | --- |
 | NEMA17 (200 full steps) | 1/16 | `3200` |
 | NEMA17 (200 full steps) | 1/8 | `1600` |
 | NEMA17 (200 full steps) | 1/4 | `800` |
@@ -165,7 +167,7 @@ Keep `update_interval` well below this value (50 ms is safe for most application
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
-|---------|-------------|-----|
+| --- | --- | --- |
 | Motor oscillates around target | `correction_threshold` too small | Increase `correction_threshold` |
 | Corrections not applied | Encoder update rate slower than `update_interval` | Decrease encoder `update_interval` |
 | `noise?` warnings in log | Encoder magnet mis-aligned or weak | Check `magnitude` sensor — optimal ~2100 |
