@@ -20,12 +20,13 @@ _LOGGER = logging.getLogger(__name__)
 
 CODEOWNERS = ["@slimcdk"]
 
-# `tmc2209_hub` is auto-loaded so its headers/types are available. It is NOT
-# instantiated unless a `tmc2209_hub:` block is configured, so standalone
-# STEP/DIR mode needs no `uart:` bus. The UART access in tmc2209_api.cpp is all
-# inline forwarders + virtual dispatch, so nothing from the uart component needs
-# to be linked when running without a hub.
-AUTO_LOAD = ["tmc2209_hub"]
+# `tmc2209_hub` is auto-loaded for its headers/types; thanks to its
+# MULTI_CONF_NO_DEFAULT it is NOT instantiated unless a `tmc2209_hub:` block is
+# configured, so standalone STEP/DIR mode needs no hub instance.
+# `uart` is auto-loaded so tmc2209_hub.h's `#include uart/uart.h` resolves at
+# compile time even when no `uart:` bus is configured (it loads as an empty
+# platform list -> no UART instance is created).
+AUTO_LOAD = ["tmc2209_hub", "uart"]
 
 CONF_TMC2209 = "tmc2209"
 CONF_TMC2209_ID = "tmc2209_id"
