@@ -40,7 +40,8 @@ void TMC2209Component::setup() {
     return;
   }
 
-  if (!this->read_field(VERSION_FIELD)) {
+  const uint8_t ic_version = (uint8_t) this->read_field(VERSION_FIELD);
+  if (ic_version == 0) {
     this->status_set_error(LOG_STR("Failed to communicate with driver"));
     this->mark_failed();
     // Disable the bus so the remaining configuration writes (and any on_boot
@@ -48,6 +49,12 @@ void TMC2209Component::setup() {
     // The component just logs that it failed and the device boots normally.
     this->set_bus_enabled(false);
     return;
+  }
+  // Successful single-wire UART read: report the detected silicon version.
+  // The TMC2209 reports IC version 0x21 in IOIN.VERSION (datasheet register map).
+  ESP_LOGCONFIG(TAG, "Detected TMC2209 over single-wire UART (IC version 0x%02X)", ic_version);
+  if (ic_version != 0x21) {
+    ESP_LOGW(TAG, "Unexpected IC version 0x%02X (expected 0x21 for TMC2209)", ic_version);
   }
 
   this->write_field(PDN_DISABLE_FIELD, true);
