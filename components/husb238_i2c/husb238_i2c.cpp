@@ -1,5 +1,6 @@
 #include "husb238_i2c.h"
 #include "esphome/core/log.h"
+#include <cstring>
 
 namespace esphome {
 namespace husb238_i2c {
@@ -24,45 +25,120 @@ void HUSB238::setup() {
   // adapter has advertised its PDOs) just gets ignored.
 }
 
+uint8_t HUSB238::negotiated_to_selection(uint8_t negotiated_code) {
+  switch (negotiated_code) {
+    case 0x1: return SEL_5V;
+    case 0x2: return SEL_9V;
+    case 0x3: return SEL_12V;
+    case 0x4: return SEL_15V;
+    case 0x5: return SEL_18V;
+    case 0x6: return SEL_20V;
+    default: return SEL_NONE;
+  }
+}
+
+uint8_t HUSB238::best_available_selection(uint8_t desired) {
+  // SRC_PDO availability registers, ascending in voltage. Bit 7 set = the source
+  // advertises that PDO. We pick the highest advertised voltage that is <= desired.
+  struct Pdo {
+    uint8_t selection;
+    uint8_t reg;
+  };
+  static const Pdo PDOS[] = {
+      {SEL_5V, REG_SRC_PDO_5V},   {SEL_9V, 0x03},  {SEL_12V, 0x04},
+      {SEL_15V, 0x05},            {SEL_18V, 0x06}, {SEL_20V, REG_SRC_PDO_20V},
+  };
+  const uint8_t count = sizeof(PDOS) / sizeof(PDOS[0]);
+
+  // How far up the list we are allowed to go (inclusive). Unknown desired -> allow all.
+  uint8_t limit = count - 1;
+  for (uint8_t i = 0; i < count; i++) {
+    if (PDOS[i].selection == desired) {
+      limit = i;
+      break;
+    }
+  }
+
+  uint8_t best = SEL_NONE;
+  for (uint8_t i = 0; i <= limit; i++) {
+    uint8_t v;
+    if (!read_register(PDOS[i].reg, &v, 1))
+      continue;
+    if (v & 0x80)  // bit 7 = this PDO is offered by the source
+      best = PDOS[i].selection;  // ascending list -> last match is the highest
+  }
+  return best;
+}
+
 void HUSB238::update() {
   update_status();
 
   if (desired_selection_ == SEL_NONE)
     return;
 
-  // Only request if a source is attached; otherwise the write is pointless and
-  // GO_COMMAND against an unattached port is what tends to wedge the bus.
+  // Only act if a source is attached; GO_COMMAND against an unattached port wedges
+  // the bus. Track attach edges so we (re)evaluate the target on each fresh attach.
   uint8_t status1;
   if (!read_register(REG_PD_STATUS1, &status1, 1))
     return;
   if (!(status1 & PD_STATUS1_ATTACH)) {
-    ESP_LOGD(TAG, "No PD source attached yet; deferring request (SRC_PDO selection 0x%X)",
-             desired_selection_);
+    source_attached_ = false;
     return;
   }
 
-  // If we are already negotiated at the desired voltage, don't keep re-requesting.
+  if (!source_attached_) {
+    source_attached_ = true;
+    request_attempts_ = 0;
+
+    // Report exactly which PDOs the source advertises, so the configured
+    // request_voltage can be chosen with certainty (chargers often skip 12 V).
+    static const struct {
+      const char *name;
+      uint8_t reg;
+    } ALL_PDOS[] = {{"5V", REG_SRC_PDO_5V}, {"9V", 0x03},  {"12V", 0x04},
+                    {"15V", 0x05},          {"18V", 0x06}, {"20V", REG_SRC_PDO_20V}};
+    char offered[48] = {0};
+    for (auto &p : ALL_PDOS) {
+      uint8_t v;
+      if (read_register(p.reg, &v, 1) && (v & 0x80)) {
+        if (offered[0])
+          strncat(offered, ", ", sizeof(offered) - strlen(offered) - 1);
+        strncat(offered, p.name, sizeof(offered) - strlen(offered) - 1);
+      }
+    }
+    ESP_LOGI(TAG, "PD source advertises: %s", offered[0] ? offered : "(none)");
+
+    // Request the highest voltage the source actually advertises, capped at desired.
+    // Requesting an UNADVERTISED voltage (e.g. 20 V from a 15 V brick) just makes the
+    // source ignore us or renegotiate every cycle -> VBUS dips -> ESP bootloop.
+    target_selection_ = best_available_selection(desired_selection_);
+    if (target_selection_ == SEL_NONE) {
+      ESP_LOGW(TAG, "PD source advertises no usable PDO <= request; leaving default voltage");
+    } else if (target_selection_ != desired_selection_) {
+      ESP_LOGI(TAG, "Requested selection 0x%X not offered; falling back to highest available 0x%X",
+               desired_selection_, target_selection_);
+    }
+  }
+
+  if (target_selection_ == SEL_NONE)
+    return;
+
+  // Already negotiated at the target? Then stop — do not keep re-requesting.
   uint8_t status0;
   if (!read_register(REG_PD_STATUS0, &status0, 1))
     return;
-  uint8_t negotiated = (status0 >> 4) & 0x0F;
-
-  // Map negotiated voltage code -> selection code to compare.
-  uint8_t negotiated_as_selection = SEL_NONE;
-  switch (negotiated) {
-    case 0x1: negotiated_as_selection = SEL_5V; break;
-    case 0x2: negotiated_as_selection = SEL_9V; break;
-    case 0x3: negotiated_as_selection = SEL_12V; break;
-    case 0x4: negotiated_as_selection = SEL_15V; break;
-    case 0x5: negotiated_as_selection = SEL_18V; break;
-    case 0x6: negotiated_as_selection = SEL_20V; break;
-    default: break;
+  if (negotiated_to_selection((status0 >> 4) & 0x0F) == target_selection_) {
+    request_attempts_ = 0;
+    return;
   }
 
-  if (negotiated_as_selection == desired_selection_)
-    return;  // already there
-
-  request_voltage(desired_selection_);
+  // Not there yet. Issue the request, but only a bounded number of times: a source
+  // that never converges must not make us hammer GO_COMMAND forever (each request
+  // can trigger a PD renegotiation that briefly collapses VBUS).
+  if (request_attempts_ < MAX_REQUEST_ATTEMPTS) {
+    request_voltage(target_selection_);
+    request_attempts_++;
+  }
 }
 
 bool HUSB238::request_voltage(uint8_t selection_code) {

@@ -3,21 +3,39 @@ substitutions:
   friendly_name: MicroDriver Controller
 
 external_components:
-  - source: github://Trondle-Embedded-Systems/MicroDriver-software
-    # `stepper` is the base used by the built-in `a4988` platform (active).
-    # `tmc2209_hub` / `tmc2209` are only needed if you enable the UART stack
-    # above; harmless to keep listed while it stays commented out.
+  # Local source so flashes use the in-tree component code (matches origin/main).
+  # Switch back to `github://Trondle-Embedded-Systems/MicroDriver-software` for
+  # CI/remote builds once changes are pushed.
+  - source:
+      type: local
+      path: components
     components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
-    refresh: 0s
 
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
-  # --- UART / TMC2209 register config intentionally NOT used here ---
-  # The motor runs in standalone STEP/DIR mode (no UART), so there is no
-  # on_boot register configuration. Microstepping and current are set in
-  # hardware (MS1/MS2 pins + VREF). To later enable UART diagnostics, see
-  # the commented TMC2209 UART stack at the bottom of this file.
+  # On this board the motor current MUST be programmed over UART: VREF (TMC2209
+  # pin 17) is left unconnected on the PCB, so analog current scaling is unusable.
+  # The tmc2209 component forces GCONF.i_scale_analog=0 (internal reference) and
+  # the run/hold current is set digitally below via IRUN/IHOLD + RSENSE (110 mOhm).
+  # Microstepping also comes from the MRES register (MS1/MS2 are tied to GND).
+  on_boot:
+    # priority -100 runs after the tmc2209 component setup (HARDWARE priority),
+    # so the UART link is up and the driver has been probed before we configure it.
+    priority: -100
+    then:
+      - tmc2209.configure:
+          id: main_stepper
+          microsteps: 8
+          interpolation: true
+      - tmc2209.currents:
+          id: main_stepper
+          run_current: 0.5 A      # conservative default — TUNE to your motor!
+          hold_current: 0.2 A     # (ignored while standstill_mode is freewheeling)
+          # Freewheeling = coils float at standstill: no idle holding current, no
+          # idle chopper noise, and no motor load on VCC during the PD voltage jump.
+          # Switch back to `normal` once power is stable if you need holding torque.
+          standstill_mode: freewheeling
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -33,9 +51,12 @@ wifi:
     ssid: ${device_name}_AP
     password: !secret ap_password
 
-# Logging
+# Logging — over the native USB (USB Serial/JTAG) so logs appear on the
+# /dev/cu.usbmodem* port. This also frees both hardware UARTs; the TMC2209
+# single-wire link uses UART0 routed to GPIO7 via the GPIO matrix.
 logger:
-  level: INFO
+  level: DEBUG
+  hardware_uart: USB_SERIAL_JTAG
   baud_rate: 115200
 
 # Over-the-air updates
@@ -60,23 +81,66 @@ i2c:
   scan: true
 
 # =====================================================================
-# TMC2209 standalone STEP/DIR control (NO UART) — for bring-up / PCB testing.
-# This uses the `tmc2209` platform WITHOUT a `tmc2209_hub` / `uart`, so the
-# component runs purely on STEP/DIR/ENN pins. Microstepping and current are
-# set in hardware (MS1/MS2 pins + VREF); no UART diagnostics (stallguard /
-# current sensing) are available in this mode. Add a `tmc2209_hub` + `uart`
-# and `tmc2209_hub_id:` later to unlock register config and diagnostics
-# (see the commented full UART stack at the bottom of this file).
+# TMC2209 single-wire UART over a SINGLE GPIO (GPIO7 -> PDN_UART).
+#
+# Verified against the board netlist (Netlist_Schematic1_2026-06-06.tel): net
+# "UTX" ties ESP32-S3 GPIO7 directly to TMC2209 PDN_UART (pin 14) with NO series
+# resistor — a true single-wire half-duplex link. GPIO7 is configured open-drain
+# + pull-up and the ESP UART peripheral routes BOTH TX and RX onto that one pad
+# (esp-idf's uart_set_pin accepts tx_pin == rx_pin for single-wire operation).
+# Open-drain is mandatory here: it prevents bus contention while the driver
+# drives its reply. The ESP receives its own transmission echoed back on the
+# shared wire; the tmc2209 component discards that echo (see tmc2209_api.cpp,
+# read_register_once_ / send_datagram_).
+#
+# Motion uses dedicated STEP/DIR/ENN pins; the single UART wire carries all
+# register configuration, current control and StallGuard/error diagnostics.
 # =====================================================================
 
-# Stepper motor configuration (TMC2209 standalone step/dir, no UART)
+# Single-wire UART on GPIO7 (shared TX/RX, open-drain, internal pull-up).
+# 115200 baud is reliable with the internal pull-up driving the line high during
+# the ESP's stop/idle bits (no external pull-up on the PCB). The TMC2209
+# auto-detects the baud from the sync nibble, so this can be raised later.
+uart:
+  id: tmc_uart
+  tx_pin:
+    number: GPIO7
+    # Same physical pin as rx_pin (single wire). `allow_other_uses` silences the
+    # "Pin 7 is used in multiple places" reuse check; `ignore_pin_validation_error`
+    # silences the mode/capability check for the shared open-drain configuration.
+    mode:
+      input: true
+      output: true
+      open_drain: true
+      pullup: true
+    allow_other_uses: true
+    ignore_pin_validation_error: true
+  rx_pin:
+    number: GPIO7
+    mode:
+      input: true
+      pullup: true
+    allow_other_uses: true
+    ignore_pin_validation_error: true
+  baud_rate: 115200
+
+tmc2209_hub:
+  id: tmc_hub
+  uart_id: tmc_uart
+
+# Stepper motor configuration (TMC2209 over single-wire UART + STEP/DIR motion).
 stepper:
   - platform: tmc2209
     id: main_stepper
+    tmc2209_hub_id: tmc_hub
+    address: 0x00            # MS1_AD0/MS2_AD1 tied to GND on this board -> node 0
     step_pin: GPIO35
     dir_pin: GPIO34
-    # ENN is active-low and required in standalone mode (no UART to toggle TOFF).
-    enn_pin: GPIO9
+    enn_pin: GPIO9           # active-low hardware enable
+    diag_pin: GPIO4          # StallGuard / driver-error output
+    rsense: 110 mOhm         # R18/R19 external sense resistors
+    vsense: false
+    clock_frequency: 12000000  # CLK pin tied to GND -> internal 12 MHz oscillator
     max_speed: 900 steps/s
     acceleration: 1500 steps/s^2
     deceleration: 500 steps/s^2
@@ -174,55 +238,6 @@ sensor:
     update_interval: 1s
     icon: mdi:axis-arrow
 
-# =====================================================================
-# OPTIONAL: TMC2209 single-wire UART stack — DISABLED.
-# Enable this block (and remove the a4988 `stepper:` above) once the UART
-# link is wired/working to get StallGuard, current sensing and register
-# configuration. It is sourced from this repo's vendored, ESPHome-compatible
-# tmc2209 components (upstream slimcdk is currently incompatible with this
-# ESPHome version — its codegen is missing the cg.templatable() wrappers).
-# =====================================================================
-#
-# # UART configuration for TMC2209 (single-wire on GPIO7, open-drain + pull-up)
-# uart:
-#   id: tmc_uart
-#   tx_pin:
-#     number: GPIO7
-#     mode:
-#       input: true
-#       output: true
-#       open_drain: true
-#       pullup: true
-#     ignore_pin_validation_error: true
-#   rx_pin:
-#     number: GPIO7
-#     mode:
-#       input: true
-#       pullup: true
-#     ignore_pin_validation_error: true
-#   baud_rate: 500000
-#
-# tmc2209_hub:
-#   id: tmc_hub
-#   uart_id: tmc_uart
-#
-# stepper:
-#   - platform: tmc2209
-#     id: main_stepper
-#     tmc2209_hub_id: tmc_hub
-#     address: 0x00
-#     max_speed: 900 steps/s
-#     acceleration: 1500 steps/s^2
-#     deceleration: 500 steps/s^2
-#     step_pin: GPIO35
-#     dir_pin: GPIO34
-#     enn_pin: GPIO9
-#     diag_pin: GPIO4
-#     rsense: 110 mOhm
-#     vsense: false
-#     clock_frequency: 12000000
-# =====================================================================
-
 # Text sensors for diagnostics
 text_sensor:
   - platform: version
@@ -237,7 +252,12 @@ output:
 
 husb238_i2c:
   id: usb_pd
-  request_voltage: 20      # request 20V from the PD source (must be offered by the adapter)
+  # 12 V has far more current headroom than 20 V (20 V PDOs are often only 1 A,
+  # whose OCP trips on inrush -> brownout/bootloop). The driver auto-falls back to
+  # the highest voltage the source actually advertises if 12 V isn't offered.
+  # Raise to 15/20 only if your supply sustains the inrush (or after adding an
+  # inrush-limiting / soft-start stage on VBUS->VCC in hardware).
+  request_voltage: 12
   output_voltage:
     name: "USB Voltage"
   output_current:

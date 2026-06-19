@@ -83,8 +83,25 @@ class HUSB238 : public PollingComponent, public i2c::I2CDevice {
   OutputCurrentSensor *output_current_sensor_{nullptr};
   InputVoltageSensor *input_voltage_sensor_{nullptr};
 
+  // Map a PD_STATUS0 negotiated voltage code (high nibble) to the matching
+  // SRC_PDO selection code, so we can tell when we've reached the target.
+  static uint8_t negotiated_to_selection(uint8_t negotiated_code);
+
+  // Read the source's advertised PDO registers (0x02..0x07, bit 7 = available)
+  // and return the highest SRC_PDO selection code that does not exceed `desired`.
+  // Returns SEL_NONE if the source advertises nothing usable.
+  uint8_t best_available_selection(uint8_t desired);
+
   // Desired SRC_PDO selection code (0 = leave alone).
   uint8_t desired_selection_{SEL_NONE};
+
+  // Achievable target (highest advertised PDO <= desired) computed on attach, and
+  // a bounded request counter so a source that never settles cannot make us hammer
+  // GO_COMMAND every cycle (repeated PD renegotiation browns out VBUS -> bootloop).
+  uint8_t target_selection_{SEL_NONE};
+  bool source_attached_{false};
+  uint8_t request_attempts_{0};
+  static const uint8_t MAX_REQUEST_ATTEMPTS = 3;
 
   // State tracking
   float last_output_voltage_{-1.0f};
