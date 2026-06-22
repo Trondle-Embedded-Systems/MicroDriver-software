@@ -3,13 +3,12 @@ substitutions:
   friendly_name: MicroDriver Controller
 
 external_components:
-  # Local source so flashes use the in-tree component code (matches origin/main).
-  # Switch back to `github://Trondle-Embedded-Systems/MicroDriver-software` for
-  # CI/remote builds once changes are pushed.
-  - source:
-      type: local
-      path: components
+  - source: github://Trondle-Embedded-Systems/MicroDriver-software
+    # `stepper` is the base used by the built-in `a4988` platform (active).
+    # `tmc2209_hub` / `tmc2209` are only needed if you enable the UART stack
+    # above; harmless to keep listed while it stays commented out.
     components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
+    refresh: 0s
 
 esphome:
   name: ${device_name}
