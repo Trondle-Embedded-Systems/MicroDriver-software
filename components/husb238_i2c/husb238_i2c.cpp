@@ -72,6 +72,14 @@ uint8_t HUSB238::best_available_selection(uint8_t desired) {
 void HUSB238::update() {
   update_status();
 
+  // Debug: dump raw PD_STATUS1 every cycle so we can see whether ATTACH (bit 6,
+  // 0x40) is actually being read as set. Remove once attach behaviour is confirmed.
+  uint8_t dbg_status1;
+  if (read_register(REG_PD_STATUS1, &dbg_status1, 1))
+    ESP_LOGD(TAG, "PD_STATUS1 = 0x%02X (ATTACH=%d)", dbg_status1, (dbg_status1 & PD_STATUS1_ATTACH) ? 1 : 0);
+  else
+    ESP_LOGD(TAG, "PD_STATUS1 read failed");
+
   if (desired_selection_ == SEL_NONE)
     return;
 
