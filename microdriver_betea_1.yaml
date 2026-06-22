@@ -178,9 +178,13 @@ number:
     min_value: -100000
     max_value: 100000
     step: 100
+    initial_value: 0
     unit_of_measurement: steps
-    lambda: return id(main_stepper)->current_position;
-    update_interval: 1s
+    # Optimistic: remembers the last-commanded target. Previously this polled
+    # current_position every 1s, which both spammed the log and overwrote the
+    # user's set target with the live position. Use the Current Position sensor
+    # for monitoring; this entity is purely a target command.
+    optimistic: true
     set_action:
       - stepper.set_target:
           id: main_stepper
@@ -237,6 +241,10 @@ sensor:
     lambda: return id(main_stepper)->current_position;
     update_interval: 1s
     icon: mdi:axis-arrow
+    # Only publish when the position actually changes, so a stationary motor
+    # stops re-publishing (and re-logging) the same value every second.
+    filters:
+      - delta: 0.5
 
 # Text sensors for diagnostics
 text_sensor:
