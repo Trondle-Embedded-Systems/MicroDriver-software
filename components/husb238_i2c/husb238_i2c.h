@@ -63,7 +63,11 @@ class HUSB238 : public PollingComponent, public i2c::I2CDevice {
   // Real HUSB238 register map (Hynetek datasheet / Adafruit + SparkFun docs).
   static const uint8_t REG_PD_STATUS0 = 0x00;  // [7:4] negotiated voltage, [3:0] current
   static const uint8_t REG_PD_STATUS1 = 0x01;  // bit6 = ATTACH
-  static const uint8_t REG_SRC_PDO_5V = 0x02;
+  static const uint8_t REG_SRC_PDO_5V = 0x02;   // bit7 = detected, [3:0] = current
+  static const uint8_t REG_SRC_PDO_9V = 0x03;
+  static const uint8_t REG_SRC_PDO_12V = 0x04;
+  static const uint8_t REG_SRC_PDO_15V = 0x05;
+  static const uint8_t REG_SRC_PDO_18V = 0x06;
   static const uint8_t REG_SRC_PDO_20V = 0x07;
   static const uint8_t REG_SRC_PDO = 0x08;      // [7:4] = requested PdSelection
   static const uint8_t REG_GO_COMMAND = 0x09;   // write 0x01 to request SRC_PDO
