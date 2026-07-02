@@ -212,6 +212,18 @@ int32_t TMC2209API::read_register(uint8_t address) {
   return 0;
 }
 
+void TMC2209API::replay_dirty_registers() {
+  for (uint8_t address = 0; address < REGISTER_COUNT; address++) {
+    if (!this->get_dirty_bit_(address))
+      continue;
+    const uint8_t access = register_access_[address];
+    // Flag registers (GSTAT) are write-to-clear: there is no state to restore.
+    if (!IS_WRITABLE(access) || IS_FLAG(access))
+      continue;
+    this->write_register(address, this->shadow_register_[address]);
+  }
+}
+
 bool TMC2209API::read_register_checked(uint8_t address, int32_t *value_out) {
   uint32_t value;
   if (this->cache_(CACHE_READ, address, &value)) {
