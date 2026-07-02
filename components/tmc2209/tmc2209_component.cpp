@@ -116,6 +116,12 @@ void TMC2209Component::setup() {
   this->reset_handler_.set_callbacks(  // gstat reset
       [this]() {                       // rise
         this->write_field(RESET_FIELD, 1);
+        // The driver came back from a power-on reset (supply dip) and lost all
+        // register state. On this board VREF is unconnected, so the factory
+        // defaults are unusable (wrong current/microsteps, DEDGE off) — replay
+        // everything that was ever written so motion keeps working.
+        ESP_LOGW(TAG, "Driver reset detected; re-applying register configuration");
+        this->replay_dirty_registers();
         this->on_driver_status_callback_.call(RESET);
       },
       [this]() {  // fall
