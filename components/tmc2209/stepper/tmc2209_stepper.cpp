@@ -5,8 +5,67 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/hal.h"
 
+#ifdef TMC2209_USE_STEP_TIMER
+#include <esp_rom_sys.h>
+#endif
+
 namespace esphome {
 namespace tmc2209 {
+
+#ifdef TMC2209_USE_STEP_TIMER
+bool IRAM_ATTR StepPulseStore::timer_isr(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata,
+                                         void *arg) {
+  auto *s = static_cast<StepPulseStore *>(arg);
+  const uint32_t interval = s->interval_us;
+  const int32_t pos = *s->current_position;
+  const int32_t target = *s->target_position;
+  uint64_t next_alarm;
+
+  if (interval == 0 || pos == target) {
+    // Standstill: tick slowly so a new target is picked up within IDLE_TICK_US.
+    s->next_step_at = 0;
+    next_alarm = edata->count_value + IDLE_TICK_US;
+  } else {
+    const int8_t dir = (target > pos) ? 1 : -1;
+    if (dir != s->last_dir) {
+      s->dir_pin.digital_write(dir < 0);
+      s->last_dir = dir;
+    }
+    if (s->dedge) {
+      // DEDGE enabled (UART): every edge is one microstep, so just toggle.
+      s->step_state = !s->step_state;
+      s->step_pin.digital_write(s->step_state);
+    } else {
+      // Standalone (no UART): only rising edges step; emit a full pulse. The
+      // driver minimum high time is ~100 ns, so 1 µs busy-wait is plenty.
+      s->step_pin.digital_write(true);
+      esp_rom_delay_us(1);
+      s->step_pin.digital_write(false);
+    }
+    *s->current_position = pos + dir;
+
+    // Schedule the next step relative to the previous due time (drift-free at
+    // constant speed). After idle, or if we fell behind (interval shrank, loop
+    // stall), restart from now instead of bursting catch-up steps.
+    const uint64_t base = (s->next_step_at != 0) ? s->next_step_at : edata->count_value;
+    s->next_step_at = base + interval;
+    if (s->next_step_at <= edata->count_value)
+      s->next_step_at = edata->count_value + interval;
+    next_alarm = s->next_step_at;
+  }
+
+  // Keep a small margin so the new alarm can never land in the past (a missed
+  // alarm would stop the timer chain entirely).
+  const uint64_t min_next = edata->count_value + 5;
+  if (next_alarm < min_next)
+    next_alarm = min_next;
+
+  gptimer_alarm_config_t alarm = {};
+  alarm.alarm_count = next_alarm;
+  gptimer_set_alarm_action(timer, &alarm);
+  return false;
+}
+#endif  // TMC2209_USE_STEP_TIMER
 
 void TMC2209Stepper::dump_config() {
   ESP_LOGCONFIG(TAG, "TMC2209 Stepper:");
@@ -36,6 +95,42 @@ void TMC2209Stepper::setup() {
     // In standalone mode it is a no-op, so the driver keeps DEDGE off and the loop
     // must emit a full STEP pulse per microstep (see loop()).
     this->dedge_active_ = this->bus_enabled();
+
+#ifdef TMC2209_USE_STEP_TIMER
+    // Pace STEP pulses from a hardware timer ISR instead of the main loop: a
+    // loop pass regularly exceeds one step period (WiFi/API/sensors), which
+    // makes loop-paced pulses visibly jerky. See StepPulseStore.
+    this->sps_.step_pin = this->step_pin_->to_isr();
+    this->sps_.dir_pin = this->dir_pin_->to_isr();
+    this->sps_.current_position = &this->current_position;
+    this->sps_.target_position = (volatile int32_t *) &this->target_position;
+    this->sps_.dedge = this->dedge_active_;
+
+    gptimer_config_t timer_config = {};
+    timer_config.clk_src = GPTIMER_CLK_SRC_DEFAULT;
+    timer_config.direction = GPTIMER_COUNT_UP;
+    timer_config.resolution_hz = 1000000;  // 1 tick = 1 µs
+
+    esp_err_t err = gptimer_new_timer(&timer_config, &this->step_timer_);
+    if (err == ESP_OK) {
+      gptimer_event_callbacks_t cbs = {};
+      cbs.on_alarm = StepPulseStore::timer_isr;
+      err = gptimer_register_event_callbacks(this->step_timer_, &cbs, &this->sps_);
+    }
+    if (err == ESP_OK)
+      err = gptimer_enable(this->step_timer_);
+    if (err == ESP_OK) {
+      gptimer_alarm_config_t alarm = {};
+      alarm.alarm_count = StepPulseStore::IDLE_TICK_US;
+      err = gptimer_set_alarm_action(this->step_timer_, &alarm);
+    }
+    if (err == ESP_OK)
+      err = gptimer_start(this->step_timer_);
+    this->step_timer_ok_ = (err == ESP_OK);
+    if (!this->step_timer_ok_) {
+      ESP_LOGE(TAG, "Step pulse timer setup failed (err %d); falling back to loop-paced stepping", (int) err);
+    }
+#endif
   }
 
   if (this->control_method_ == ControlMethod::SERIAL_CONTROL) {
@@ -76,10 +171,24 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
   }
 
   if (this->control_method_ == ControlMethod::PULSES_CONTROL) {
-    // Generate STEP pulses from the (high-frequency) main loop. current_speed_ is the
-    // pulse frequency in steps/s directly; DEDGE is enabled so every edge is one
-    // microstep. Doing this in loop() instead of a dedicated max-priority FreeRTOS
-    // task keeps the scheduler/watchdog fed and avoids starving WiFi and the main loop.
+#ifdef TMC2209_USE_STEP_TIMER
+    if (this->step_timer_ok_) {
+      // Hardware-paced stepping: the GPTimer ISR emits the STEP/DIR edges with
+      // µs precision; here we only run the accel ramp and publish the current
+      // step period. current_speed_ is the pulse frequency in steps/s directly.
+      uint32_t interval_us = 0;
+      if (this->current_speed_ > 0.0f && this->current_direction != Direction::STANDSTILL) {
+        interval_us = (uint32_t) (1e6f / this->current_speed_);
+        if (interval_us == 0)
+          interval_us = 1;
+      }
+      this->sps_.interval_us = interval_us;
+    } else
+#endif
+    // Legacy fallback: generate STEP pulses from the (high-frequency) main loop.
+    // current_speed_ is the pulse frequency in steps/s directly; DEDGE is enabled
+    // so every edge is one microstep. Pulse timing then inherits main-loop jitter,
+    // so this only runs when the hardware step timer is unavailable.
     if (this->current_speed_ > 0.0f && this->current_direction != Direction::STANDSTILL) {
       const time_t interval = (time_t) (1e6f / this->current_speed_);
       if ((now - this->last_step_) >= interval) {
@@ -193,7 +302,13 @@ bool TMC2209Stepper::is_stalled() {
   }
 
   const int32_t sgthrs = this->read_register(SGTHRS);
-  const int32_t sgresult = this->read_register(SG_RESULT);
+  int32_t sgresult = 0;
+  // A failed SG_RESULT read returns 0 = "fully stalled"; treating a UART glitch
+  // as a stall would end StallGuard homing at a wrong position. Only trust a
+  // parsed reply (see TMC2209Component::is_stalled).
+  if (!this->read_register_checked(SG_RESULT, &sgresult)) {
+    return false;
+  }
   return (sgthrs << 1) > sgresult;
 }
 

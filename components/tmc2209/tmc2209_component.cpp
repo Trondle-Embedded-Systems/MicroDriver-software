@@ -269,7 +269,13 @@ bool TMC2209Component::is_stalled() {
   }
 
   const int32_t sgthrs = this->read_register(SGTHRS);
-  const int32_t sgresult = this->read_register(SG_RESULT);
+  int32_t sgresult = 0;
+  // SG_RESULT == 0 means "fully stalled", which is exactly what a failed read
+  // also returns — a UART glitch must not be mistaken for a stall (it would
+  // e.g. end StallGuard homing at a wrong position). Only trust a parsed reply.
+  if (!this->read_register_checked(SG_RESULT, &sgresult)) {
+    return false;
+  }
   return (sgthrs << 1) > sgresult;
 }
 

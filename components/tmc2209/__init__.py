@@ -120,8 +120,10 @@ TMC2209_BASE_CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_ENN_PIN): pins.internal_gpio_output_pin_schema,
         cv.Optional(CONF_DIAG_PIN): pins.internal_gpio_input_pin_schema,
         cv.Optional(CONF_INDEX_PIN): pins.internal_gpio_input_pin_schema,
-        cv.Optional(CONF_STEP_PIN): pins.gpio_output_pin_schema,
-        cv.Optional(CONF_DIR_PIN): pins.gpio_output_pin_schema,
+        # STEP/DIR are written from the step-timer ISR, so they must be
+        # internal (on-chip) pins; I/O expanders cannot pulse fast enough.
+        cv.Optional(CONF_STEP_PIN): pins.internal_gpio_output_pin_schema,
+        cv.Optional(CONF_DIR_PIN): pins.internal_gpio_output_pin_schema,
         cv.Optional(CONF_ADDRESS, default=0x00): cv.hex_uint8_t,
         cv.Optional(CONF_VSENSE): cv.boolean,  # default OTP
         cv.Optional(CONF_OTTRIM): cv.int_range(0, 3),  # default OTP
