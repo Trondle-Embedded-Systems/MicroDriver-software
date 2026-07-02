@@ -106,6 +106,10 @@ class TMC2209API : public Parented<TMC2209Hub> {
   // Write or read a register (all fields) or register field (single field within register)
   void write_register(uint8_t address, int32_t value);
   int32_t read_register(uint8_t address);
+  // Like read_register, but reports whether a reply was actually parsed instead
+  // of silently returning 0. Use wherever 0 is a meaningful register value
+  // (e.g. SG_RESULT, where 0 means "fully stalled").
+  bool read_register_checked(uint8_t address, int32_t *value_out);
   void write_field(RegisterField field, uint32_t value);
   uint32_t read_field(RegisterField field);
   uint32_t extract_field(uint32_t data, RegisterField field);

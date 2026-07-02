@@ -90,10 +90,19 @@ void TMC2209API::send_datagram_(const uint8_t *data, uint8_t len) {
   this->parent_->write_array(data, len);
   this->parent_->flush();  // wait until fully transmitted
   // On the single wire our own transmission is echoed straight back into the
-  // receiver; discard it so it cannot be mistaken for a reply.
+  // receiver; discard it so it cannot be mistaken for a reply. flush() only
+  // waits for TX: the echo typically still sits in the UART hardware FIFO at
+  // this point (the esp-idf driver surfaces it after the RX idle timeout, ~10
+  // symbol times), so draining "whatever is available" races the echo and
+  // leaves stale bytes that corrupt the NEXT transaction (e.g. the IFCNT
+  // write-verify read). Wait for the full echo and consume exactly len bytes.
   uint8_t scrap;
-  while (this->parent_->available())
-    this->parent_->read_byte(&scrap);
+  if (this->wait_available_(len)) {
+    for (uint8_t i = 0; i < len; i++)
+      this->parent_->read_byte(&scrap);
+  } else {
+    this->flush_rx_();  // echo incomplete (bus glitch): drop whatever did arrive
+  }
 }
 
 bool TMC2209API::wait_available_(uint8_t count) {
@@ -201,6 +210,24 @@ int32_t TMC2209API::read_register(uint8_t address) {
 
   ESP_LOGW(TAG, "read of register 0x%02X failed after %d attempts", address, MAX_UART_ATTEMPTS);
   return 0;
+}
+
+bool TMC2209API::read_register_checked(uint8_t address, int32_t *value_out) {
+  uint32_t value;
+  if (this->cache_(CACHE_READ, address, &value)) {
+    *value_out = value;
+    return true;
+  }
+
+  if (!this->bus_enabled_)
+    return false;
+
+  address = address & ADDRESS_MASK;
+  for (uint8_t attempt = 0; attempt < MAX_UART_ATTEMPTS; attempt++) {
+    if (this->read_register_once_(address, value_out))
+      return true;
+  }
+  return false;
 }
 
 uint32_t TMC2209API::update_field(uint32_t data, RegisterField field, uint32_t value) {

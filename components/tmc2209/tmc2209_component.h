@@ -53,8 +53,10 @@ class TMC2209Component : public TMC2209API, public Component {
   void set_enn_pin(InternalGPIOPin *pin) { this->enn_pin_ = pin; };
   void set_diag_pin(InternalGPIOPin *pin) { this->diag_pin_ = pin; };
   void set_index_pin(InternalGPIOPin *pin) { this->index_pin_ = pin; };
-  void set_step_pin(GPIOPin *pin) { this->step_pin_ = pin; };
-  void set_dir_pin(GPIOPin *pin) { this->dir_pin_ = pin; };
+  // Internal pins: STEP/DIR are driven from the step-timer ISR (to_isr()), so
+  // I/O-expander pins are not supported (they'd be far too slow anyway).
+  void set_step_pin(InternalGPIOPin *pin) { this->step_pin_ = pin; };
+  void set_dir_pin(InternalGPIOPin *pin) { this->dir_pin_ = pin; };
 
   void set_clk_freq(uint32_t clk_freq) {
     this->clk_freq_ = clk_freq;
@@ -122,8 +124,8 @@ class TMC2209Component : public TMC2209API, public Component {
   InternalGPIOPin *enn_pin_{nullptr};
   InternalGPIOPin *diag_pin_{nullptr};
   InternalGPIOPin *index_pin_{nullptr};
-  GPIOPin *step_pin_{nullptr};
-  GPIOPin *dir_pin_{nullptr};
+  InternalGPIOPin *step_pin_{nullptr};
+  InternalGPIOPin *dir_pin_{nullptr};
   /** */
 
   /** Runtime helpers */

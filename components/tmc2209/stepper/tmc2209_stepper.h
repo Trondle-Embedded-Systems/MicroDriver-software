@@ -9,6 +9,16 @@
 #include "esphome/core/automation.h"
 #include "esphome/components/stepper/stepper.h"
 
+#if defined(USE_ESP32)
+#include <esp_idf_version.h>
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+// Hardware-paced STEP pulse generation (see StepPulseStore). Requires the
+// GPTimer driver, which is only available from ESP-IDF v5 onwards.
+#define TMC2209_USE_STEP_TIMER
+#include <driver/gptimer.h>
+#endif
+#endif
+
 namespace esphome {
 namespace tmc2209 {
 
@@ -27,6 +37,34 @@ struct IndexPulseStore {
     (*(arg->current_position_ptr)) += (int8_t) (*(arg->direction_ptr));
   }
 };
+
+#ifdef TMC2209_USE_STEP_TIMER
+// Emits STEP/DIR edges from a GPTimer alarm ISR so pulse spacing is exact
+// (µs-level) no matter how long a main-loop pass takes. The loop only runs the
+// acceleration ramp and publishes interval_us; the ISR paces the pulses and is
+// the sole owner of position while moving. Stepping stops by itself once
+// current_position reaches target_position, so a stalled loop can never
+// overshoot the target.
+struct StepPulseStore {
+  // Ticks are 1 µs. While standing still the alarm keeps firing at this slow
+  // idle rate so motion can resume without task-context timer reconfiguration
+  // (gptimer_set_alarm_action is only called from the ISR after setup).
+  static constexpr uint32_t IDLE_TICK_US = 1000;
+
+  ISRInternalGPIOPin step_pin;
+  ISRInternalGPIOPin dir_pin;
+  volatile int32_t *current_position{nullptr};
+  volatile int32_t *target_position{nullptr};
+  volatile uint32_t interval_us{0};  // step period in µs; 0 = standstill
+  bool dedge{false};                 // DEDGE on: one microstep per edge (toggle)
+  // ISR-private state below
+  bool step_state{false};
+  int8_t last_dir{0};
+  uint64_t next_step_at{0};  // absolute tick of the next step; 0 = restart fresh
+
+  static bool IRAM_ATTR timer_isr(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *arg);
+};
+#endif
 
 class TMC2209Stepper : public TMC2209Component, public Stepper {
  public:
@@ -73,6 +111,13 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   // hub it stays at the driver default (step on rising edge), so the loop must
   // emit a full pulse per microstep instead of toggling a single edge.
   bool dedge_active_{false};
+#ifdef TMC2209_USE_STEP_TIMER
+  StepPulseStore sps_;
+  gptimer_handle_t step_timer_{nullptr};
+  // When timer creation fails (or on frameworks without GPTimer) stepping falls
+  // back to the legacy loop-paced path.
+  bool step_timer_ok_{false};
+#endif
   /* */
 
   // Auto-disable after reaching target

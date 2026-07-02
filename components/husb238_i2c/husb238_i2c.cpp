@@ -97,33 +97,6 @@ void HUSB238::update() {
     source_attached_ = true;
     request_attempts_ = 0;
 
-    // Report exactly which PDOs the source advertises, so the configured
-    // request_voltage can be chosen with certainty (chargers often skip 12 V).
-    // Per the HUSB238 datasheet, each SRC_PDO register (0x02..0x07) reports in
-    // bit 7 whether the source advertises that voltage (the "voltage detected"
-    // bit, == Adafruit's isVoltageDetected(pd)), and in bits [3:0] the maximum
-    // current the source offers at that voltage. Log every detected PDO with its
-    // proposed current so all available power profiles are visible in the logs.
-    static const struct {
-      const char *name;
-      uint8_t reg;
-    } ALL_PDOS[] = {{"5V", REG_SRC_PDO_5V},   {"9V", REG_SRC_PDO_9V},   {"12V", REG_SRC_PDO_12V},
-                    {"15V", REG_SRC_PDO_15V}, {"18V", REG_SRC_PDO_18V}, {"20V", REG_SRC_PDO_20V}};
-    ESP_LOGI(TAG, "PD source available voltages (HUSB238 isVoltageDetected):");
-    uint8_t detected_count = 0;
-    for (auto &p : ALL_PDOS) {
-      uint8_t v;
-      if (!read_register(p.reg, &v, 1))
-        continue;
-      if (v & 0x80) {  // bit 7 set -> source advertises this PDO (isVoltageDetected)
-        detected_count++;
-        ESP_LOGI(TAG, "  [%u] %-3s  up to %.2f A", detected_count, p.name,
-                 decode_current(v & 0x0F));
-      }
-    }
-    if (detected_count == 0)
-      ESP_LOGW(TAG, "  (none - source advertises no PDOs)");
-
     // Request the highest voltage the source actually advertises, capped at desired.
     // Requesting an UNADVERTISED voltage (e.g. 20 V from a 15 V brick) just makes the
     // source ignore us or renegotiate every cycle -> VBUS dips -> ESP bootloop.
