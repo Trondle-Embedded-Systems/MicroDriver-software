@@ -3,10 +3,11 @@ substitutions:
   friendly_name: MicroDriver Controller
 
 external_components:
-  - source: github://Trondle-Embedded-Systems/MicroDriver-software
-    # `stepper` is the base used by the built-in `a4988` platform (active).
-    # `tmc2209_hub` / `tmc2209` are only needed if you enable the UART stack
-    # above; harmless to keep listed while it stays commented out.
+  # Build against the component code in this checkout so YAML and driver APIs
+  # always stay in sync (in particular the Home +/- end-stop seek method).
+  - source:
+      type: local
+      path: components
     components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
     refresh: 0s
 
@@ -163,6 +164,22 @@ button:
           id: main_stepper
           target: !lambda return id(main_stepper)->current_position - 1000;
   - platform: template
+    name: Home +
+    on_press:
+      - lambda: |-
+          const int32_t travel = static_cast<int32_t>(lroundf(id(travel_length).state));
+          id(main_stepper)->start_endstop_seek(
+              esphome::stepper::Direction::FORWARD, travel, id(max_speed).state,
+              id(homing_slow_speed).state, travel);
+  - platform: template
+    name: Home -
+    on_press:
+      - lambda: |-
+          const int32_t travel = static_cast<int32_t>(lroundf(id(travel_length).state));
+          id(main_stepper)->start_endstop_seek(
+              esphome::stepper::Direction::BACKWARD, travel, id(max_speed).state,
+              id(homing_slow_speed).state, 0);
+  - platform: template
     name: Reset Position
     on_press:
       - stepper.report_position:
@@ -171,6 +188,28 @@ button:
 
 # Target position + speed control
 number:
+  # Home +/- always moves this full distance relative to wherever the internal
+  # counter currently is. That makes homing independent of manual door movement.
+  - platform: template
+    name: Travel Length
+    id: travel_length
+    min_value: 100
+    max_value: 100000
+    step: 100
+    initial_value: 3200
+    unit_of_measurement: steps
+    optimistic: true
+    mode: box
+  - platform: template
+    name: Homing Slow Speed
+    id: homing_slow_speed
+    min_value: 50
+    max_value: 1000
+    step: 50
+    initial_value: 200
+    unit_of_measurement: steps/s
+    optimistic: true
+    mode: box
   - platform: template
     name: Target Position
     id: target_position
@@ -269,5 +308,3 @@ husb238_i2c:
     name: "USB Voltage"
   output_current:
     name: "USB Current"
-
-

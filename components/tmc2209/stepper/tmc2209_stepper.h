@@ -81,6 +81,12 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   void set_target(int32_t steps) override;
   bool is_stalled() override;
 
+  // Seek a mechanical end-stop without relying on the remembered step count.
+  // First travel a full door length at fast_speed, then continue slowly until
+  // StallGuard fires. A stall in either phase completes the seek immediately.
+  void start_endstop_seek(Direction direction, int32_t travel_length, float fast_speed, float slow_speed,
+                          int32_t endpoint_position);
+
   void set_control_method(ControlMethod method) { this->control_method_ = method; }
 
   void set_auto_disable_ms(uint32_t ms) { this->auto_disable_ms_ = ms; }
@@ -139,6 +145,20 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   float pre_homing_max_speed_{0.0f};
   uint32_t pre_homing_sgthrs_{0};
   uint32_t pre_homing_tcoolthrs_{0};
+
+  enum class EndstopSeekPhase : uint8_t { IDLE, FAST_TRAVEL, SLOW_APPROACH };
+  EndstopSeekPhase endstop_seek_phase_{EndstopSeekPhase::IDLE};
+  Direction endstop_seek_direction_{Direction::STANDSTILL};
+  float endstop_seek_slow_speed_{0.0f};
+  int32_t endstop_seek_position_{0};
+  int32_t endstop_seek_start_position_{0};
+  float pre_endstop_seek_max_speed_{0.0f};
+  uint32_t pre_endstop_seek_sgthrs_{0};
+  uint32_t pre_endstop_seek_tcoolthrs_{0};
+  uint32_t last_endstop_stall_check_ms_{0};
+  static constexpr uint32_t ENDSTOP_STALL_POLL_INTERVAL_MS = 10;
+
+  void finish_endstop_seek_(bool stalled);
 };
 
 }  // namespace tmc2209

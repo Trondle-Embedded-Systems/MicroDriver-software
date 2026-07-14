@@ -5,6 +5,9 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/hal.h"
 
+#include <algorithm>
+#include <limits>
+
 #ifdef TMC2209_USE_STEP_TIMER
 #include <esp_rom_sys.h>
 #endif
@@ -240,6 +243,104 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
     Stepper::set_target(this->homing_pending_target_);
     ESP_LOGI(TAG, "Homing complete at %d, proceeding to %d", confirmed_home, this->homing_pending_target_);
   }
+
+  if (this->endstop_seek_phase_ != EndstopSeekPhase::IDLE) {
+    // A stall during either the fast travel or slow approach means the physical
+    // end-stop has already been reached. Do not attempt the remaining movement.
+    const uint32_t now_ms = millis();
+    const bool check_stall = (now_ms - this->last_endstop_stall_check_ms_) >= ENDSTOP_STALL_POLL_INTERVAL_MS;
+    if (check_stall)
+      this->last_endstop_stall_check_ms_ = now_ms;
+    // SG_RESULT is not meaningful at standstill. Arm detection after the first
+    // commanded STEP pulse; the software position advances even if that pulse
+    // cannot move a door which is already against the mechanical stop.
+    const bool seek_has_started = this->current_position != this->endstop_seek_start_position_;
+    if (check_stall && seek_has_started && this->is_stalled()) {
+      this->finish_endstop_seek_(true);
+    } else if (this->endstop_seek_phase_ == EndstopSeekPhase::FAST_TRAVEL && this->has_reached_target()) {
+      this->endstop_seek_phase_ = EndstopSeekPhase::SLOW_APPROACH;
+      this->set_max_speed(this->endstop_seek_slow_speed_);
+
+      // Keep seeking in the same direction. One billion steps is deliberately
+      // finite so the base stepper's signed distance calculation cannot overflow.
+      const int64_t slow_target = static_cast<int64_t>(this->current_position) +
+                                  static_cast<int64_t>(this->endstop_seek_direction_) * 1000000000LL;
+      const int64_t bounded_target = std::max<int64_t>(std::numeric_limits<int32_t>::min(),
+                                                       std::min<int64_t>(std::numeric_limits<int32_t>::max(),
+                                                                         slow_target));
+      Stepper::set_target(static_cast<int32_t>(bounded_target));
+      ESP_LOGI(TAG, "End-stop seek: fast travel complete, approaching at %.0f steps/s",
+               this->endstop_seek_slow_speed_);
+    } else if (this->endstop_seek_phase_ == EndstopSeekPhase::SLOW_APPROACH && this->has_reached_target()) {
+      // This should only be reachable after an implausibly long movement or at
+      // the int32 position limit. Stop instead of wrapping the position counter.
+      ESP_LOGE(TAG, "End-stop seek stopped without a StallGuard event");
+      this->finish_endstop_seek_(false);
+    }
+  }
+}
+
+void TMC2209Stepper::start_endstop_seek(Direction direction, int32_t travel_length, float fast_speed,
+                                        float slow_speed, int32_t endpoint_position) {
+  if (direction == Direction::STANDSTILL || travel_length <= 0 || fast_speed <= 0.0f || slow_speed <= 0.0f) {
+    ESP_LOGE(TAG, "End-stop seek requires a direction, positive travel length, and positive speeds");
+    return;
+  }
+  if (!this->bus_enabled()) {
+    ESP_LOGE(TAG, "End-stop seek requires a working UART connection for StallGuard");
+    return;
+  }
+
+  // Cancel any prior motion/homing and restore its temporary settings first.
+  if (this->endstop_seek_phase_ != EndstopSeekPhase::IDLE)
+    this->finish_endstop_seek_(false);
+  if (this->is_homing_) {
+    this->set_max_speed(this->pre_homing_max_speed_);
+    this->write_register(SGTHRS, this->pre_homing_sgthrs_);
+    this->write_register(TCOOLTHRS, this->pre_homing_tcoolthrs_);
+    this->is_homing_ = false;
+  }
+  Stepper::stop();
+
+  this->pre_endstop_seek_max_speed_ = this->max_speed_;
+  this->pre_endstop_seek_sgthrs_ = this->read_register(SGTHRS);
+  this->pre_endstop_seek_tcoolthrs_ = this->read_register(TCOOLTHRS);
+  this->write_register(SGTHRS, this->homing_sgthrs_);
+  this->write_register(TCOOLTHRS, this->homing_tcoolthrs_);
+
+  this->endstop_seek_direction_ = direction;
+  this->endstop_seek_slow_speed_ = slow_speed;
+  this->endstop_seek_position_ = endpoint_position;
+  this->endstop_seek_start_position_ = this->current_position;
+  this->endstop_seek_phase_ = EndstopSeekPhase::FAST_TRAVEL;
+  this->last_endstop_stall_check_ms_ = millis() - ENDSTOP_STALL_POLL_INTERVAL_MS;
+  this->set_max_speed(fast_speed);
+  this->enable(true);
+  this->auto_disabled_ = false;
+
+  const int64_t fast_target = static_cast<int64_t>(this->current_position) +
+                              static_cast<int64_t>(direction) * travel_length;
+  const int64_t bounded_target = std::max<int64_t>(std::numeric_limits<int32_t>::min(),
+                                                   std::min<int64_t>(std::numeric_limits<int32_t>::max(),
+                                                                     fast_target));
+  Stepper::set_target(static_cast<int32_t>(bounded_target));
+  ESP_LOGI(TAG, "End-stop seek: moving %d steps at %.0f steps/s", static_cast<int>(direction) * travel_length,
+           fast_speed);
+}
+
+void TMC2209Stepper::finish_endstop_seek_(bool stalled) {
+  Stepper::stop();
+  this->set_max_speed(this->pre_endstop_seek_max_speed_);
+  this->write_register(SGTHRS, this->pre_endstop_seek_sgthrs_);
+  this->write_register(TCOOLTHRS, this->pre_endstop_seek_tcoolthrs_);
+  this->endstop_seek_phase_ = EndstopSeekPhase::IDLE;
+  this->endstop_seek_direction_ = Direction::STANDSTILL;
+
+  if (stalled) {
+    this->report_position(this->endstop_seek_position_);
+    Stepper::set_target(this->endstop_seek_position_);
+    ESP_LOGI(TAG, "End-stop found; position set to %d", this->endstop_seek_position_);
+  }
 }
 
 void TMC2209Stepper::set_target(int32_t steps) {
@@ -283,6 +384,10 @@ void TMC2209Stepper::set_target(int32_t steps) {
 }
 
 void TMC2209Stepper::stop() {
+  if (this->endstop_seek_phase_ != EndstopSeekPhase::IDLE) {
+    this->finish_endstop_seek_(false);
+    return;
+  }
   Stepper::stop();
   if (this->control_method_ == ControlMethod::SERIAL_CONTROL) {
     this->write_field(VACTUAL_FIELD, 0);
