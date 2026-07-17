@@ -3,13 +3,16 @@ substitutions:
   friendly_name: MicroDriver Controller
 
 external_components:
-  # Build against the component code in this checkout so YAML and driver APIs
-  # always stay in sync (in particular the Home +/- end-stop seek method).
+  # This repository is private. Keep the read-only GitHub token in Home
+  # Assistant's secrets.yaml as `microdriver_github_token`.
   - source:
-      type: local
-      path: components
+      type: git
+      url: https://github.com/Trondle-Embedded-Systems/MicroDriver-software.git
+      ref: main
+      username: x-access-token
+      password: !secret microdriver_github_token
     components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
-    refresh: 0s
+    refresh: 1h
 
 esphome:
   name: ${device_name}
