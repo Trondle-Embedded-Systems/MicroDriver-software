@@ -171,6 +171,8 @@ button:
     on_press:
       - lambda: |-
           const int32_t travel = static_cast<int32_t>(lroundf(id(travel_length).state));
+          id(main_stepper)->set_homing_sgthrs(
+              static_cast<uint8_t>(lroundf(id(stallguard_sensitivity).state)));
           id(main_stepper)->start_endstop_seek(
               esphome::stepper::Direction::FORWARD, travel, id(max_speed).state,
               id(homing_slow_speed).state, travel);
@@ -179,6 +181,8 @@ button:
     on_press:
       - lambda: |-
           const int32_t travel = static_cast<int32_t>(lroundf(id(travel_length).state));
+          id(main_stepper)->set_homing_sgthrs(
+              static_cast<uint8_t>(lroundf(id(stallguard_sensitivity).state)));
           id(main_stepper)->start_endstop_seek(
               esphome::stepper::Direction::BACKWARD, travel, id(max_speed).state,
               id(homing_slow_speed).state, 0);
@@ -211,6 +215,18 @@ number:
     step: 50
     initial_value: 200
     unit_of_measurement: steps/s
+    optimistic: true
+    mode: box
+  # TMC2209 SGTHRS used by both phases of Home +/-.
+  # Higher values detect a stall earlier; lower values require more load.
+  - platform: template
+    name: StallGuard Sensitivity
+    id: stallguard_sensitivity
+    min_value: 0
+    max_value: 255
+    step: 1
+    initial_value: 50
+    restore_value: true
     optimistic: true
     mode: box
   - platform: template
