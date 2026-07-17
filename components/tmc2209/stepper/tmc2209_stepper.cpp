@@ -251,15 +251,30 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
     const bool check_stall = (now_ms - this->last_endstop_stall_check_ms_) >= ENDSTOP_STALL_POLL_INTERVAL_MS;
     if (check_stall)
       this->last_endstop_stall_check_ms_ = now_ms;
-    // SG_RESULT is not meaningful at standstill. Arm detection after the first
-    // commanded STEP pulse; the software position advances even if that pulse
-    // cannot move a door which is already against the mechanical stop.
-    const bool seek_has_started = this->current_position != this->endstop_seek_start_position_;
-    if (check_stall && seek_has_started && this->is_stalled()) {
+    // SG_RESULT is not meaningful at standstill or during the first few slow
+    // acceleration steps. Allow each phase to emit enough pulses for
+    // StallGuard to become valid, then require several matching samples. The
+    // software position still advances when the door is physically blocked, so
+    // an end-stop encountered during the initial fast travel remains detected.
+    const int64_t steps_since_arm = std::abs(static_cast<int64_t>(this->current_position) -
+                                             static_cast<int64_t>(this->endstop_seek_stall_arm_position_));
+    const bool stall_is_armed = steps_since_arm >= ENDSTOP_STALL_ARM_STEPS;
+    if (check_stall && stall_is_armed) {
+      if (this->is_stalled()) {
+        if (this->endstop_seek_consecutive_stalls_ < ENDSTOP_STALL_CONFIRMATIONS)
+          this->endstop_seek_consecutive_stalls_++;
+      } else {
+        this->endstop_seek_consecutive_stalls_ = 0;
+      }
+    }
+
+    if (this->endstop_seek_consecutive_stalls_ >= ENDSTOP_STALL_CONFIRMATIONS) {
       this->finish_endstop_seek_(true);
     } else if (this->endstop_seek_phase_ == EndstopSeekPhase::FAST_TRAVEL && this->has_reached_target()) {
       this->endstop_seek_phase_ = EndstopSeekPhase::SLOW_APPROACH;
       this->set_max_speed(this->endstop_seek_slow_speed_);
+      this->endstop_seek_stall_arm_position_ = this->current_position;
+      this->endstop_seek_consecutive_stalls_ = 0;
 
       // Keep seeking in the same direction. One billion steps is deliberately
       // finite so the base stepper's signed distance calculation cannot overflow.
@@ -311,8 +326,9 @@ void TMC2209Stepper::start_endstop_seek(Direction direction, int32_t travel_leng
   this->endstop_seek_direction_ = direction;
   this->endstop_seek_slow_speed_ = slow_speed;
   this->endstop_seek_position_ = endpoint_position;
-  this->endstop_seek_start_position_ = this->current_position;
+  this->endstop_seek_stall_arm_position_ = this->current_position;
   this->endstop_seek_phase_ = EndstopSeekPhase::FAST_TRAVEL;
+  this->endstop_seek_consecutive_stalls_ = 0;
   this->last_endstop_stall_check_ms_ = millis() - ENDSTOP_STALL_POLL_INTERVAL_MS;
   this->set_max_speed(fast_speed);
   this->enable(true);

@@ -151,12 +151,15 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   Direction endstop_seek_direction_{Direction::STANDSTILL};
   float endstop_seek_slow_speed_{0.0f};
   int32_t endstop_seek_position_{0};
-  int32_t endstop_seek_start_position_{0};
+  int32_t endstop_seek_stall_arm_position_{0};
   float pre_endstop_seek_max_speed_{0.0f};
   uint32_t pre_endstop_seek_sgthrs_{0};
   uint32_t pre_endstop_seek_tcoolthrs_{0};
   uint32_t last_endstop_stall_check_ms_{0};
+  uint8_t endstop_seek_consecutive_stalls_{0};
   static constexpr uint32_t ENDSTOP_STALL_POLL_INTERVAL_MS = 10;
+  static constexpr int32_t ENDSTOP_STALL_ARM_STEPS = 32;
+  static constexpr uint8_t ENDSTOP_STALL_CONFIRMATIONS = 3;
 
   void finish_endstop_seek_(bool stalled);
 };
