@@ -147,6 +147,11 @@ stepper:
     max_speed: 900 steps/s
     acceleration: 1500 steps/s^2
     deceleration: 500 steps/s^2
+    # Release ENN shortly after any move, Stop command, or end-stop detection.
+    # No stallguard_homing sub-block: re-enabling must never seek a remembered
+    # position when the door may have been moved manually.
+    auto_disable:
+      settle: 100ms
 
 # Control buttons
 button:
