@@ -9,8 +9,6 @@ external_components:
       type: git
       url: https://github.com/Trondle-Embedded-Systems/MicroDriver-software.git
       ref: main
-      username: x-access-token
-      password: !secret microdriver_github_token
     components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
     refresh: 1h
 
