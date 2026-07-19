@@ -83,7 +83,7 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
 
   // Seek a mechanical end-stop without relying on the remembered step count.
   // First travel a full door length at fast_speed, then continue slowly until
-  // StallGuard fires. A stall in either phase completes the seek immediately.
+  // StallGuard fires. StallGuard is deliberately ignored during fast travel.
   void start_endstop_seek(Direction direction, int32_t travel_length, float fast_speed, float slow_speed,
                           int32_t endpoint_position);
 

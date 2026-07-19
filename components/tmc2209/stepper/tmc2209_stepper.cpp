@@ -245,36 +245,15 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
   }
 
   if (this->endstop_seek_phase_ != EndstopSeekPhase::IDLE) {
-    // A stall during either the fast travel or slow approach means the physical
-    // end-stop has already been reached. Do not attempt the remaining movement.
-    const uint32_t now_ms = millis();
-    const bool check_stall = (now_ms - this->last_endstop_stall_check_ms_) >= ENDSTOP_STALL_POLL_INTERVAL_MS;
-    if (check_stall)
-      this->last_endstop_stall_check_ms_ = now_ms;
-    // SG_RESULT is not meaningful at standstill or during the first few slow
-    // acceleration steps. Allow each phase to emit enough pulses for
-    // StallGuard to become valid, then require several matching samples. The
-    // software position still advances when the door is physically blocked, so
-    // an end-stop encountered during the initial fast travel remains detected.
-    const int64_t steps_since_arm = std::abs(static_cast<int64_t>(this->current_position) -
-                                             static_cast<int64_t>(this->endstop_seek_stall_arm_position_));
-    const bool stall_is_armed = steps_since_arm >= ENDSTOP_STALL_ARM_STEPS;
-    if (check_stall && stall_is_armed) {
-      if (this->is_stalled()) {
-        if (this->endstop_seek_consecutive_stalls_ < ENDSTOP_STALL_CONFIRMATIONS)
-          this->endstop_seek_consecutive_stalls_++;
-      } else {
-        this->endstop_seek_consecutive_stalls_ = 0;
-      }
-    }
-
-    if (this->endstop_seek_consecutive_stalls_ >= ENDSTOP_STALL_CONFIRMATIONS) {
-      this->finish_endstop_seek_(true);
-    } else if (this->endstop_seek_phase_ == EndstopSeekPhase::FAST_TRAVEL && this->has_reached_target()) {
+    if (this->endstop_seek_phase_ == EndstopSeekPhase::FAST_TRAVEL && this->has_reached_target()) {
+      // The fast phase is purely step-counted. Ignore StallGuard until every
+      // configured travel step has been emitted, regardless of remembered
+      // position or whether the motor was already mechanically blocked.
       this->endstop_seek_phase_ = EndstopSeekPhase::SLOW_APPROACH;
       this->set_max_speed(this->endstop_seek_slow_speed_);
       this->endstop_seek_stall_arm_position_ = this->current_position;
       this->endstop_seek_consecutive_stalls_ = 0;
+      this->last_endstop_stall_check_ms_ = millis() - ENDSTOP_STALL_POLL_INTERVAL_MS;
 
       // Keep seeking in the same direction. One billion steps is deliberately
       // finite so the base stepper's signed distance calculation cannot overflow.
@@ -286,11 +265,36 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
       Stepper::set_target(static_cast<int32_t>(bounded_target));
       ESP_LOGI(TAG, "End-stop seek: fast travel complete, approaching at %.0f steps/s",
                this->endstop_seek_slow_speed_);
-    } else if (this->endstop_seek_phase_ == EndstopSeekPhase::SLOW_APPROACH && this->has_reached_target()) {
-      // This should only be reachable after an implausibly long movement or at
-      // the int32 position limit. Stop instead of wrapping the position counter.
-      ESP_LOGE(TAG, "End-stop seek stopped without a StallGuard event");
-      this->finish_endstop_seek_(false);
+    } else if (this->endstop_seek_phase_ == EndstopSeekPhase::SLOW_APPROACH) {
+      const uint32_t now_ms = millis();
+      const bool check_stall =
+          (now_ms - this->last_endstop_stall_check_ms_) >= ENDSTOP_STALL_POLL_INTERVAL_MS;
+      if (check_stall)
+        this->last_endstop_stall_check_ms_ = now_ms;
+
+      // SG_RESULT is not meaningful at standstill or during the first few slow
+      // acceleration steps. Allow enough slow pulses for StallGuard to become
+      // valid, then require several matching samples.
+      const int64_t steps_since_arm = std::abs(static_cast<int64_t>(this->current_position) -
+                                               static_cast<int64_t>(this->endstop_seek_stall_arm_position_));
+      const bool stall_is_armed = steps_since_arm >= ENDSTOP_STALL_ARM_STEPS;
+      if (check_stall && stall_is_armed) {
+        if (this->is_stalled()) {
+          if (this->endstop_seek_consecutive_stalls_ < ENDSTOP_STALL_CONFIRMATIONS)
+            this->endstop_seek_consecutive_stalls_++;
+        } else {
+          this->endstop_seek_consecutive_stalls_ = 0;
+        }
+      }
+
+      if (this->endstop_seek_consecutive_stalls_ >= ENDSTOP_STALL_CONFIRMATIONS) {
+        this->finish_endstop_seek_(true);
+      } else if (this->has_reached_target()) {
+        // This should only be reachable after an implausibly long movement or at
+        // the int32 position limit. Stop instead of wrapping the position counter.
+        ESP_LOGE(TAG, "End-stop seek stopped without a StallGuard event");
+        this->finish_endstop_seek_(false);
+      }
     }
   }
 }
@@ -355,7 +359,12 @@ void TMC2209Stepper::finish_endstop_seek_(bool stalled) {
   if (stalled) {
     this->report_position(this->endstop_seek_position_);
     Stepper::set_target(this->endstop_seek_position_);
-    ESP_LOGI(TAG, "End-stop found; position set to %d", this->endstop_seek_position_);
+    // Release ENN immediately after the mechanical stop is confirmed. Bypass
+    // the stepper override because motion is already stopped and the seek state
+    // has already been cleared above.
+    TMC2209Component::enable(false);
+    this->auto_disabled_ = true;
+    ESP_LOGI(TAG, "End-stop found; position set to %d and driver disabled", this->endstop_seek_position_);
   }
 }
 
