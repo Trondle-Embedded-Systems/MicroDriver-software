@@ -3,12 +3,14 @@ substitutions:
   friendly_name: MicroDriver Controller
 
 external_components:
-  - source: github://Trondle-Embedded-Systems/MicroDriver-software
-    # `stepper` is the base used by the built-in `a4988` platform (active).
-    # `tmc2209_hub` / `tmc2209` are only needed if you enable the UART stack
-    # above; harmless to keep listed while it stays commented out.
+  # This repository is private. Keep the read-only GitHub token in Home
+  # Assistant's secrets.yaml as `microdriver_github_token`.
+  - source:
+      type: git
+      url: https://github.com/Trondle-Embedded-Systems/MicroDriver-software.git
+      ref: main
     components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
-    refresh: 0s
+    refresh: 1h
 
 esphome:
   name: ${device_name}
@@ -143,85 +145,11 @@ stepper:
     max_speed: 900 steps/s
     acceleration: 1500 steps/s^2
     deceleration: 500 steps/s^2
-    # Sensorless homing: the driver yanks DIAG high (StallGuard) when the motor
-    # pushes against a mechanical hard stop. This handler only acts on a stall
-    # while a homing move is in progress — guarded both by `homing_active` and by
-    # the fact that StallGuard's DIAG output stays disabled (TCOOLTHRS = 0)
-    # outside of homing — so a normal jog/move can never trip it by accident.
-    on_stall:
-      - if:
-          condition:
-            lambda: return id(homing_active);
-          then:
-            - logger.log: "Home +: hit hard stop (StallGuard) — setting reference"
-            - stepper.stop: main_stepper
-            # Treat the hard stop as the reference point. Change 0 to your axis
-            # length if you'd rather make the + end-stop the MAX coordinate.
-            - stepper.report_position:
-                id: main_stepper
-                position: 0
-            - globals.set:
-                id: homing_active
-                value: "false"
-            # Disable StallGuard's DIAG output again (TCOOLTHRS = 0) so ordinary
-            # moves never trigger a false "stall".
-            - tmc2209.configure:
-                id: main_stepper
-                tcool_threshold: 0
-            # Restore the normal top speed for regular moves.
-            - stepper.set_speed:
-                id: main_stepper
-                speed: 900 steps/s
-
-# Sensorless-homing state. `homing_active` is true only while a Home move is
-# running, so the on_stall handler above knows a stall means "reached the hard
-# stop" rather than an accidental stall during a normal move.
-globals:
-  - id: homing_active
-    type: bool
-    restore_value: no
-    initial_value: "false"
-
-# =====================================================================
-# home_to_plus — drive toward the + (positive) direction until StallGuard
-# detects the motor pushing against a mechanical hard stop.
-#
-# Runs the motor in the + direction at a steady, moderate speed; when it stalls
-# against the stop the driver pulls DIAG high, firing the stepper's `on_stall:`
-# handler (above), which stops the motor and zeroes the position.
-#
-# Tuning (depends on your motor + mechanics):
-#   - threshold (SGTHRS): higher = more sensitive / stalls earlier. Start ~50.
-#   - speed: too slow and StallGuard won't engage; too fast and it slams the
-#     stop. 300-500 steps/s is a good starting range.
-#   - tcool_threshold (TCOOLTHRS): must be larger than TSTEP at the homing speed
-#     so StallGuard stays active. 500000 is safely high for this clock/speed.
-# If it false-triggers right at the start of the move, lower `acceleration`
-# above or reduce `threshold`.
-# =====================================================================
-script:
-  - id: home_to_plus
-    then:
-      - logger.log: "Home +: starting move toward hard stop"
-      - globals.set:
-          id: homing_active
-          value: "true"
-      # Stall-detection sensitivity.
-      - tmc2209.stallguard:
-          id: main_stepper
-          threshold: 50
-      # Arm StallGuard's DIAG stall output (0 = disabled).
-      - tmc2209.configure:
-          id: main_stepper
-          tcool_threshold: 500000
-      # Steady, moderate approach speed for reliable stall detection.
-      - stepper.set_speed:
-          id: main_stepper
-          speed: 400 steps/s
-      # Drive far into the + direction; the hard stop ends the move.
-      - stepper.set_target:
-          id: main_stepper
-          target: 1000000000
+    # Release ENN shortly after any move, Stop command, or end-stop detection.
+    # No stallguard_homing sub-block: re-enabling must never seek a remembered
+    # position when the door may have been moved manually.
+    auto_disable:
+      settle: 100ms
 
 # Control buttons
 button:
@@ -229,18 +157,6 @@ button:
     name: Stop Motor
     on_press:
       - stepper.stop: main_stepper
-      # Cancel any in-progress homing so a manual stop can't leave StallGuard
-      # armed (which would zero the position on the next normal move).
-      - globals.set:
-          id: homing_active
-          value: "false"
-      - tmc2209.configure:
-          id: main_stepper
-          tcool_threshold: 0
-  - platform: template
-    name: Home +
-    on_press:
-      - script.execute: home_to_plus
   - platform: template
     name: Move 1000 Steps Forward
     on_press:
@@ -254,6 +170,26 @@ button:
           id: main_stepper
           target: !lambda return id(main_stepper)->current_position - 1000;
   - platform: template
+    name: Home +
+    on_press:
+      - lambda: |-
+          const int32_t travel = static_cast<int32_t>(lroundf(id(travel_length).state));
+          id(main_stepper)->set_homing_sgthrs(
+              static_cast<uint8_t>(lroundf(id(stallguard_sensitivity).state)));
+          id(main_stepper)->start_endstop_seek(
+              esphome::stepper::Direction::FORWARD, travel, id(max_speed).state,
+              id(homing_slow_speed).state, travel);
+  - platform: template
+    name: Home -
+    on_press:
+      - lambda: |-
+          const int32_t travel = static_cast<int32_t>(lroundf(id(travel_length).state));
+          id(main_stepper)->set_homing_sgthrs(
+              static_cast<uint8_t>(lroundf(id(stallguard_sensitivity).state)));
+          id(main_stepper)->start_endstop_seek(
+              esphome::stepper::Direction::BACKWARD, travel, id(max_speed).state,
+              id(homing_slow_speed).state, 0);
+  - platform: template
     name: Reset Position
     on_press:
       - stepper.report_position:
@@ -262,6 +198,40 @@ button:
 
 # Target position + speed control
 number:
+  # Home +/- always moves this full distance relative to wherever the internal
+  # counter currently is. That makes homing independent of manual door movement.
+  - platform: template
+    name: Travel Length
+    id: travel_length
+    min_value: 100
+    max_value: 100000
+    step: 100
+    initial_value: 3200
+    unit_of_measurement: steps
+    optimistic: true
+    mode: box
+  - platform: template
+    name: Homing Slow Speed
+    id: homing_slow_speed
+    min_value: 50
+    max_value: 1000
+    step: 50
+    initial_value: 200
+    unit_of_measurement: steps/s
+    optimistic: true
+    mode: box
+  # TMC2209 SGTHRS used by both phases of Home +/-.
+  # Higher values detect a stall earlier; lower values require more load.
+  - platform: template
+    name: StallGuard Sensitivity
+    id: stallguard_sensitivity
+    min_value: 0
+    max_value: 255
+    step: 1
+    initial_value: 50
+    restore_value: true
+    optimistic: true
+    mode: box
   - platform: template
     name: Target Position
     id: target_position
@@ -360,5 +330,3 @@ husb238_i2c:
     name: "USB Voltage"
   output_current:
     name: "USB Current"
-
-
