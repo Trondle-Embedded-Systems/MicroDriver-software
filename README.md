@@ -90,6 +90,7 @@ Each component has its own `README.md` with wiring diagrams, full configuration 
 *   [ICM-20948](components/icm20948/README.md)
 *   [Stepper Closed Loop (AS5600)](components/stepper_closed_loop/README.md)
 *   [Insight](components/insight/README.md)
+*   [MicroDriver Door Control](DOOR_CONTROL_GUIDE.md)
 
 
 ---

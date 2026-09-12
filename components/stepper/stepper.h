@@ -35,6 +35,7 @@ class Stepper {
   bool has_reached_target() { return this->current_position == this->target_position; }
   virtual void stop() {
     this->target_position = this->current_position;
+    this->current_speed_ = 0.0f;
     this->current_direction = Direction::STANDSTILL;
   }
   virtual void enable(bool enable) {}
@@ -44,15 +45,15 @@ class Stepper {
   volatile Direction current_direction{Direction::STANDSTILL};
 
  protected:
-  void IRAM_ATTR HOT calculate_speed_(time_t now);
-  Direction IRAM_ATTR HOT should_step_(time_t now);
+  void IRAM_ATTR HOT calculate_speed_(uint32_t now);
+  Direction IRAM_ATTR HOT should_step_(uint32_t now);
 
   float acceleration_{1e6f};
   float deceleration_{1e6f};
   float current_speed_{0.0f};
   float max_speed_{1e6f};
-  time_t last_calculation_{0};
-  time_t last_step_{0};
+  uint32_t last_calculation_{0};
+  uint32_t last_step_{0};
 };
 
 template<typename... Ts> class SetTargetAction : public Action<Ts...> {

@@ -7,19 +7,20 @@ namespace stepper {
 
 static const char *const TAG = "stepper";
 
-void IRAM_ATTR HOT Stepper::calculate_speed_(time_t now = micros()) {
+void IRAM_ATTR HOT Stepper::calculate_speed_(uint32_t now = micros()) {
   // delta t since last calculation in seconds
-  float dt = (now - this->last_calculation_) * 1e-6f;
+  float dt = uint32_t(now - this->last_calculation_) * 1e-6f;
   this->last_calculation_ = now;
   if (this->has_reached_target()) {
     this->current_speed_ = 0.0f;
     return;
   }
 
-  int32_t num_steps = abs(int32_t(this->target_position) - int32_t(this->current_position));
+  int64_t distance = int64_t(this->target_position) - int64_t(this->current_position);
+  int64_t num_steps = distance < 0 ? -distance : distance;
   // (v_0)^2 / 2*a
   float v_squared = this->current_speed_ * this->current_speed_;
-  auto steps_to_decelerate = static_cast<int32_t>(v_squared / (2 * this->deceleration_));
+  float steps_to_decelerate = v_squared / (2 * this->deceleration_);
   if (num_steps <= steps_to_decelerate) {
     // need to start decelerating
     this->current_speed_ -= this->deceleration_ * dt;
@@ -29,7 +30,7 @@ void IRAM_ATTR HOT Stepper::calculate_speed_(time_t now = micros()) {
   }
   this->current_speed_ = clamp(this->current_speed_, 0.0f, this->max_speed_);
 }
-Direction IRAM_ATTR HOT Stepper::should_step_(time_t now = micros()) {
+Direction IRAM_ATTR HOT Stepper::should_step_(uint32_t now = micros()) {
   this->calculate_speed_(now);
   if (this->current_speed_ == 0.0f) {
     this->current_direction = Direction::STANDSTILL;

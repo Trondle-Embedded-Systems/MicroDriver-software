@@ -1,0 +1,355 @@
+substitutions:
+  device_name: microdriver_door
+  friendly_name: MicroDriver Door
+  # Independent upper bound for every movement.
+  door_max_run_time: 30s
+  # Stop the motor before a command changes its direction.
+  door_reverse_delay: 250ms
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  # The controller sets the motor current through UART.
+  # VREF is not connected on this board.
+  # Priority -100 starts this automation after the TMC2209 hardware setup.
+  # The door does not move during startup.
+  on_boot:
+    priority: -100
+    then:
+      - tmc2209.configure:
+          id: main_stepper
+          microsteps: 8
+          interpolation: true
+          enable_spreadcycle: false
+          tpwm_threshold: 0
+          tcool_threshold: 0
+      - tmc2209.currents:
+          id: main_stepper
+          run_current: 0.5 A      # TUNE to your motor
+          hold_current: 0.2 A
+          standstill_mode: freewheeling
+      # Keep the motor de-energized at standstill.
+      - tmc2209.disable: main_stepper
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: ${device_name}_AP
+    password: !secret ap_password
+
+logger:
+  level: DEBUG
+  hardware_uart: USB_SERIAL_JTAG
+  baud_rate: 115200
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+api:
+  encryption:
+    key: !secret api_key
+
+web_server:
+  port: 80
+
+i2c:
+  id: i2c_bus
+  sda: GPIO17
+  scl: GPIO21
+  scan: true
+
+# GPIO7 is the shared transmit and receive pin for PDN_UART.
+# Open-drain mode prevents bus contention during a driver reply.
+uart:
+  id: tmc_uart
+  tx_pin:
+    number: GPIO7
+    mode:
+      input: true
+      output: true
+      open_drain: true
+      pullup: true
+    allow_other_uses: true
+    ignore_pin_validation_error: true
+  rx_pin:
+    number: GPIO7
+    mode:
+      input: true
+      pullup: true
+    allow_other_uses: true
+    ignore_pin_validation_error: true
+  baud_rate: 115200
+
+tmc2209_hub:
+  id: tmc_hub
+  uart_id: tmc_uart
+
+# Request a 12 V USB Power Delivery contract for the motor supply.
+husb238_i2c:
+  id: usb_pd
+  request_voltage: 12
+
+stepper:
+  - platform: tmc2209
+    id: main_stepper
+    tmc2209_hub_id: tmc_hub
+    address: 0x00
+    step_pin: GPIO35
+    dir_pin: GPIO34
+    enn_pin: GPIO9           # Active-low hardware enable.
+    diag_pin: GPIO4          # StallGuard and driver-error output.
+    rsense: 110 mOhm
+    vsense: false
+    clock_frequency: 12000000
+    max_speed: 1000 steps/s
+    acceleration: 400 steps/s^2
+    deceleration: 400 steps/s^2
+    # Contact is a fault, not evidence that the requested endpoint was reached.
+    on_stall:
+      - if:
+          condition:
+            lambda: return id(motion_active);
+          then:
+            - logger.log: "Door: unexpected contact; stopped. Re-teach position."
+            - script.execute: fault_door
+    on_status:
+      - if:
+          condition:
+            lambda: |-
+              return code == tmc2209::RESET || code == tmc2209::DRIVER_ERROR ||
+                     code == tmc2209::CP_UNDERVOLTAGE || code == tmc2209::OVERTEMPERATURE;
+          then:
+            - logger.log: "Door: driver fault/reset; position invalidated."
+            - script.execute: fault_door
+
+globals:
+  - id: motion_active
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: closed_reference
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: open_steps
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+script:
+  # Internal cleanup does not cancel its calling script.
+  - id: halt_motor
+    then:
+      - tmc2209.disable: main_stepper
+      - globals.set:
+          id: motion_active
+          value: "false"
+      - tmc2209.configure:
+          id: main_stepper
+          tcool_threshold: 0
+      - cover.template.publish:
+          id: door_cover
+          current_operation: IDLE
+
+  # Cancel pending starts as well as active travel, including the reverse delay.
+  - id: stop_door
+    mode: restart
+    then:
+      - script.stop: move_door
+      - script.stop: door_motion_timeout
+      - script.execute: halt_motor
+
+  - id: fault_door
+    mode: restart
+    then:
+      - script.execute: stop_door
+      - globals.set:
+          id: closed_reference
+          value: "false"
+      - globals.set:
+          id: open_steps
+          value: "0"
+
+  - id: door_motion_timeout
+    mode: restart
+    then:
+      - delay: ${door_max_run_time}
+      - logger.log: "Door: movement timeout; position invalidated."
+      - script.execute: fault_door
+
+  # Normal moves use the measured stroke; jogs are small commissioning moves.
+  - id: move_door
+    mode: restart
+    parameters:
+      direction: int
+      jog: bool
+    then:
+      - script.stop: door_motion_timeout
+      - script.execute: halt_motor
+      - if:
+          condition:
+            lambda: |-
+              return !id(main_stepper).is_failed() && id(closed_reference) &&
+                     (jog || id(open_steps) > 0);
+          then:
+            - delay: ${door_reverse_delay}
+            - tmc2209.stallguard:
+                id: main_stepper
+                threshold: 50
+            - tmc2209.configure:
+                id: main_stepper
+                tcool_threshold: 500000
+            - stepper.set_speed:
+                id: main_stepper
+                speed: !lambda |-
+                  return jog ? 200.0f : id(speed_setting).state;
+            - globals.set:
+                id: motion_active
+                value: "true"
+            - if:
+                condition:
+                  lambda: return direction > 0;
+                then:
+                  - cover.template.publish:
+                      id: door_cover
+                      current_operation: OPENING
+                else:
+                  - cover.template.publish:
+                      id: door_cover
+                      current_operation: CLOSING
+            - stepper.set_target:
+                id: main_stepper
+                target: !lambda |-
+                  if (!jog) return direction > 0 ? id(open_steps) : 0;
+                  int next = id(main_stepper).current_position + (direction > 0 ? 100 : -100);
+                  if (next < 0) next = 0;
+                  if (next > 30000) next = 30000;
+                  return next;
+            - script.execute: door_motion_timeout
+            - wait_until:
+                lambda: return id(main_stepper).has_reached_target();
+            - script.stop: door_motion_timeout
+            - if:
+                condition:
+                  lambda: return !jog;
+                then:
+                  - cover.template.publish:
+                      id: door_cover
+                      state: !lambda |-
+                          return direction > 0 ? COVER_OPEN : COVER_CLOSED;
+            - script.execute: halt_motor
+          else:
+            - logger.log: "Door: teach CLOSED then OPEN before normal operation."
+
+number:
+  - platform: template
+    name: Speed
+    id: speed_setting
+    min_value: 200
+    max_value: 1000
+    step: 25
+    initial_value: 400
+    unit_of_measurement: steps/s
+    icon: mdi:speedometer
+    optimistic: true
+    mode: box
+
+cover:
+  - platform: template
+    name: Door
+    id: door_cover
+    device_class: door
+    assumed_state: true
+    has_position: false
+    open_action:
+      - script.execute:
+          id: move_door
+          direction: 1
+          jog: false
+    close_action:
+      - script.execute:
+          id: move_door
+          direction: -1
+          jog: false
+    stop_action:
+      - script.execute: stop_door
+
+button:
+  - platform: template
+    name: Open Door
+    on_press:
+      - cover.open: door_cover
+  - platform: template
+    name: Close Door
+    on_press:
+      - cover.close: door_cover
+  - platform: template
+    name: Stop Door
+    on_press:
+      - cover.stop: door_cover
+  # First place the released door at CLOSED by hand, then press this button.
+  - platform: template
+    name: Teach Closed Position
+    entity_category: config
+    on_press:
+      - script.execute: stop_door
+      - stepper.report_position:
+          id: main_stepper
+          position: 0
+      - globals.set:
+          id: closed_reference
+          value: "true"
+      - globals.set:
+          id: open_steps
+          value: "0"
+      - cover.template.publish:
+          id: door_cover
+          state: CLOSED
+  - platform: template
+    name: Jog Open 100 Steps
+    entity_category: config
+    on_press:
+      - script.execute:
+          id: move_door
+          direction: 1
+          jog: true
+  - platform: template
+    name: Jog Close 100 Steps
+    entity_category: config
+    on_press:
+      - script.execute:
+          id: move_door
+          direction: -1
+          jog: true
+  # Approach OPEN with jogs, stop before contact, then teach the measured stroke.
+  - platform: template
+    name: Teach Open Position
+    entity_category: config
+    on_press:
+      - script.execute: stop_door
+      - if:
+          condition:
+            lambda: return id(closed_reference) && id(main_stepper).current_position > 0;
+          then:
+            - globals.set:
+                id: open_steps
+                value: !lambda return id(main_stepper).current_position;
+            - cover.template.publish:
+                id: door_cover
+                state: OPEN
+          else:
+            - logger.log: "Door: teach CLOSED and jog to OPEN first."

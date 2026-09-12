@@ -13,6 +13,7 @@ void TMC2209Component::setup() {
 
   if (this->enn_pin_ != nullptr) {
     this->enn_pin_->setup();
+    this->enn_pin_->digital_write(true);
   }
 
   if (this->index_pin_ != nullptr) {
@@ -26,8 +27,9 @@ void TMC2209Component::setup() {
 
   if (this->diag_pin_ != nullptr) {
     this->diag_pin_->setup();
-    this->diag_pin_->attach_interrupt(ISRPinTriggerStore::pin_isr, &this->diag_isr_store_, gpio::INTERRUPT_RISING_EDGE);
     this->diag_isr_store_.pin_triggered_ptr = &this->diag_triggered_;
+    this->diag_pin_->attach_interrupt(ISRPinTriggerStore::pin_isr, &this->diag_isr_store_, gpio::INTERRUPT_RISING_EDGE);
+    this->diag_triggered_ = this->diag_pin_->digital_read();
   }
 
   // Standalone STEP/DIR mode: no UART hub was configured, so the register bus is
@@ -85,7 +87,12 @@ void TMC2209Component::setup() {
       [this]() {
         ESP_LOGV(TAG, "Executing DIAG rise event");
         // TODO: Handle Power-on reset ??
-        const int32_t gstat = this->read_register(GSTAT);
+        int32_t gstat = 0;
+        if (!this->read_register_checked(GSTAT, &gstat)) {
+          this->enable(false);
+          this->on_driver_status_callback_.call(DRIVER_ERROR);
+          return;
+        }
         this->check_gstat_ = (bool) gstat;
 
         // this->stall_handler_.check(gstat == 0b000);
@@ -115,14 +122,15 @@ void TMC2209Component::setup() {
 
   this->reset_handler_.set_callbacks(  // gstat reset
       [this]() {                       // rise
+        this->enable(false);
+        this->on_driver_status_callback_.call(RESET);
         this->write_field(RESET_FIELD, 1);
         // The driver came back from a power-on reset (supply dip) and lost all
         // register state. On this board VREF is unconnected, so the factory
         // defaults are unusable (wrong current/microsteps, DEDGE off) — replay
-        // everything that was ever written so motion keeps working.
+        // configuration while keeping motion stopped until explicitly commanded.
         ESP_LOGW(TAG, "Driver reset detected; re-applying register configuration");
         this->replay_dirty_registers();
-        this->on_driver_status_callback_.call(RESET);
       },
       [this]() {  // fall
         this->write_field(RESET_FIELD, 1);
@@ -131,6 +139,7 @@ void TMC2209Component::setup() {
 
   this->drv_err_handler_.set_callbacks(  // gstat drv_err
       [this]() {                         // rise
+        this->enable(false);
         this->write_field(DRV_ERR_FIELD, 1);
 
         const int32_t drv_status = this->read_register(DRV_STATUS);
@@ -155,6 +164,7 @@ void TMC2209Component::setup() {
 
   this->uvcp_handler_.set_callbacks(  // gstat uc_vp
       [this]() {                      // rise
+        this->enable(false);
         this->write_field(UV_CP_FIELD, 1);
         this->on_driver_status_callback_.call(CP_UNDERVOLTAGE);
       },
@@ -373,6 +383,8 @@ std::tuple<uint8_t, uint8_t> TMC2209Component::unpack_ottrim_values(uint8_t ottr
 
 // void TMC2209Component::enable(bool enable, bool recover_toff = true) {
 void TMC2209Component::enable(bool enable) {
+  if (enable && this->is_failed())
+    return;
   if (this->enn_pin_ != nullptr) {
     // Use ENN pin to handle enable/disable
     this->enn_pin_->digital_write(!enable);

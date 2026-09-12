@@ -143,6 +143,85 @@ stepper:
     max_speed: 900 steps/s
     acceleration: 1500 steps/s^2
     deceleration: 500 steps/s^2
+    # Sensorless homing: the driver yanks DIAG high (StallGuard) when the motor
+    # pushes against a mechanical hard stop. This handler only acts on a stall
+    # while a homing move is in progress — guarded both by `homing_active` and by
+    # the fact that StallGuard's DIAG output stays disabled (TCOOLTHRS = 0)
+    # outside of homing — so a normal jog/move can never trip it by accident.
+    on_stall:
+      - if:
+          condition:
+            lambda: return id(homing_active);
+          then:
+            - logger.log: "Home +: hit hard stop (StallGuard) — setting reference"
+            - stepper.stop: main_stepper
+            # Treat the hard stop as the reference point. Change 0 to your axis
+            # length if you'd rather make the + end-stop the MAX coordinate.
+            - stepper.report_position:
+                id: main_stepper
+                position: 0
+            - globals.set:
+                id: homing_active
+                value: "false"
+            # Disable StallGuard's DIAG output again (TCOOLTHRS = 0) so ordinary
+            # moves never trigger a false "stall".
+            - tmc2209.configure:
+                id: main_stepper
+                tcool_threshold: 0
+            # Restore the normal top speed for regular moves.
+            - stepper.set_speed:
+                id: main_stepper
+                speed: 900 steps/s
+
+# Sensorless-homing state. `homing_active` is true only while a Home move is
+# running, so the on_stall handler above knows a stall means "reached the hard
+# stop" rather than an accidental stall during a normal move.
+globals:
+  - id: homing_active
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+# =====================================================================
+# home_to_plus — drive toward the + (positive) direction until StallGuard
+# detects the motor pushing against a mechanical hard stop.
+#
+# Runs the motor in the + direction at a steady, moderate speed; when it stalls
+# against the stop the driver pulls DIAG high, firing the stepper's `on_stall:`
+# handler (above), which stops the motor and zeroes the position.
+#
+# Tuning (depends on your motor + mechanics):
+#   - threshold (SGTHRS): higher = more sensitive / stalls earlier. Start ~50.
+#   - speed: too slow and StallGuard won't engage; too fast and it slams the
+#     stop. 300-500 steps/s is a good starting range.
+#   - tcool_threshold (TCOOLTHRS): must be larger than TSTEP at the homing speed
+#     so StallGuard stays active. 500000 is safely high for this clock/speed.
+# If it false-triggers right at the start of the move, lower `acceleration`
+# above or reduce `threshold`.
+# =====================================================================
+script:
+  - id: home_to_plus
+    then:
+      - logger.log: "Home +: starting move toward hard stop"
+      - globals.set:
+          id: homing_active
+          value: "true"
+      # Stall-detection sensitivity.
+      - tmc2209.stallguard:
+          id: main_stepper
+          threshold: 50
+      # Arm StallGuard's DIAG stall output (0 = disabled).
+      - tmc2209.configure:
+          id: main_stepper
+          tcool_threshold: 500000
+      # Steady, moderate approach speed for reliable stall detection.
+      - stepper.set_speed:
+          id: main_stepper
+          speed: 400 steps/s
+      # Drive far into the + direction; the hard stop ends the move.
+      - stepper.set_target:
+          id: main_stepper
+          target: 1000000000
 
 # Control buttons
 button:
@@ -150,6 +229,18 @@ button:
     name: Stop Motor
     on_press:
       - stepper.stop: main_stepper
+      # Cancel any in-progress homing so a manual stop can't leave StallGuard
+      # armed (which would zero the position on the next normal move).
+      - globals.set:
+          id: homing_active
+          value: "false"
+      - tmc2209.configure:
+          id: main_stepper
+          tcool_threshold: 0
+  - platform: template
+    name: Home +
+    on_press:
+      - script.execute: home_to_plus
   - platform: template
     name: Move 1000 Steps Forward
     on_press:

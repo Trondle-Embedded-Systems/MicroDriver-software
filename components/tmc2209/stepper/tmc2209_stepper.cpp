@@ -16,6 +16,11 @@ namespace tmc2209 {
 bool IRAM_ATTR StepPulseStore::timer_isr(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata,
                                          void *arg) {
   auto *s = static_cast<StepPulseStore *>(arg);
+  portENTER_CRITICAL_ISR(&s->lock);
+  if (s->interval_us != 0 && edata->count_value - s->serviced_at > 250000) {
+    s->interval_us = 0;
+    s->timed_out = true;
+  }
   const uint32_t interval = s->interval_us;
   const int32_t pos = *s->current_position;
   const int32_t target = *s->target_position;
@@ -29,6 +34,7 @@ bool IRAM_ATTR StepPulseStore::timer_isr(gptimer_handle_t timer, const gptimer_a
     const int8_t dir = (target > pos) ? 1 : -1;
     if (dir != s->last_dir) {
       s->dir_pin.digital_write(dir < 0);
+      esp_rom_delay_us(1);  // DIR must settle before the STEP edge.
       s->last_dir = dir;
     }
     if (s->dedge) {
@@ -54,9 +60,12 @@ bool IRAM_ATTR StepPulseStore::timer_isr(gptimer_handle_t timer, const gptimer_a
     next_alarm = s->next_step_at;
   }
 
+  portEXIT_CRITICAL_ISR(&s->lock);
   // Keep a small margin so the new alarm can never land in the past (a missed
   // alarm would stop the timer chain entirely).
-  const uint64_t min_next = edata->count_value + 5;
+  uint64_t current_count = edata->count_value;
+  gptimer_get_raw_count(timer, &current_count);
+  const uint64_t min_next = current_count + 20;
   if (next_alarm < min_next)
     next_alarm = min_next;
 
@@ -144,21 +153,23 @@ void TMC2209Stepper::setup() {
     this->index_pin_->attach_interrupt(IndexPulseStore::pulse_isr, &this->ips_, gpio::INTERRUPT_ANY_EDGE);
   }
 
-  this->enable(true);
+  // Targets explicitly enable the motor after on_boot configures its current.
+  this->enable(false);
 
   ESP_LOGCONFIG(TAG, "TMC2209 Stepper setup done.");
 }
 
-void TMC2209Stepper::on_shutdown() { this->stop(); }
+void TMC2209Stepper::on_shutdown() { this->enable(false); }
 
 void IRAM_ATTR HOT TMC2209Stepper::loop() {
   TMC2209Component::loop();
 
   // Compute speed and direction
-  const time_t now = micros();
+  const uint32_t now = micros();
   this->calculate_speed_(now);
-  const int32_t to_target = (this->target_position - this->current_position);
-  this->current_direction = (to_target != 0 ? (Direction) (to_target / abs(to_target)) : Direction::STANDSTILL);
+  const int32_t position = this->current_position;
+  this->current_direction = this->target_position > position ? Direction::FORWARD :
+      (this->target_position < position ? Direction::BACKWARD : Direction::STANDSTILL);
 
   if (this->control_method_ == ControlMethod::SERIAL_CONTROL) {
     // The driver's internal pulse generator (VACTUAL) is expressed in clock-based
@@ -182,7 +193,19 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
         if (interval_us == 0)
           interval_us = 1;
       }
-      this->sps_.interval_us = interval_us;
+      uint64_t serviced_at = 0;
+      gptimer_get_raw_count(this->step_timer_, &serviced_at);
+      portENTER_CRITICAL(&this->sps_.lock);
+      const bool timed_out = this->sps_.timed_out;
+      this->sps_.serviced_at = serviced_at;
+      this->sps_.interval_us = timed_out ? 0 : interval_us;
+      portEXIT_CRITICAL(&this->sps_.lock);
+      if (timed_out) {
+        this->enable(false);
+        this->on_driver_status_callback_.call(DRIVER_ERROR);
+        ESP_LOGE(TAG, "Motion stopped: main loop unresponsive for 250 ms");
+        return;
+      }
     } else
 #endif
     // Legacy fallback: generate STEP pulses from the (high-frequency) main loop.
@@ -190,16 +213,17 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
     // so every edge is one microstep. Pulse timing then inherits main-loop jitter,
     // so this only runs when the hardware step timer is unavailable.
     if (this->current_speed_ > 0.0f && this->current_direction != Direction::STANDSTILL) {
-      const time_t interval = (time_t) (1e6f / this->current_speed_);
-      if ((now - this->last_step_) >= interval) {
+      const uint32_t interval = (uint32_t) (1e6f / this->current_speed_);
+      if (uint32_t(now - this->last_step_) >= interval) {
         if (this->direction_ != this->current_direction) {
           this->dir_pin_->digital_write(this->current_direction == Direction::BACKWARD);
+          delayMicroseconds(1);
           this->direction_ = this->current_direction;
         }
         if (this->dedge_active_) {
           // DEDGE enabled (UART): every edge is one microstep, so just toggle.
-          this->step_pin_->digital_write(this->step_state_);
           this->step_state_ = !this->step_state_;
+          this->step_pin_->digital_write(this->step_state_);
         } else {
           // Standalone (no UART): DEDGE is off, so only rising edges step. Emit a
           // full pulse per microstep. The high time only needs to exceed the
@@ -243,6 +267,8 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
 }
 
 void TMC2209Stepper::set_target(int32_t steps) {
+  if (this->is_failed())
+    return;
   if (this->control_method_ == ControlMethod::CONTROL_UNSET) {
     ESP_LOGE(TAG, "Control method not set!");
   }
@@ -279,13 +305,28 @@ void TMC2209Stepper::set_target(int32_t steps) {
     this->enable(true);
   }
   this->auto_disabled_ = false;
+#ifdef TMC2209_USE_STEP_TIMER
+  portENTER_CRITICAL(&this->sps_.lock);
+#endif
   Stepper::set_target(steps);
+#ifdef TMC2209_USE_STEP_TIMER
+  portEXIT_CRITICAL(&this->sps_.lock);
+#endif
 }
 
 void TMC2209Stepper::stop() {
+#ifdef TMC2209_USE_STEP_TIMER
+  portENTER_CRITICAL(&this->sps_.lock);
+  this->sps_.interval_us = 0;
+  this->sps_.timed_out = false;
+#endif
   Stepper::stop();
+#ifdef TMC2209_USE_STEP_TIMER
+  portEXIT_CRITICAL(&this->sps_.lock);
+#endif
   if (this->control_method_ == ControlMethod::SERIAL_CONTROL) {
     this->write_field(VACTUAL_FIELD, 0);
+    this->vactual_ = 0;
   }
 }
 

@@ -56,6 +56,10 @@ struct StepPulseStore {
   volatile int32_t *current_position{nullptr};
   volatile int32_t *target_position{nullptr};
   volatile uint32_t interval_us{0};  // step period in µs; 0 = standstill
+  portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
+  // Stop pulses if the main loop stops servicing the motion controller.
+  uint64_t serviced_at{0};
+  bool timed_out{false};
   bool dedge{false};                 // DEDGE on: one microstep per edge (toggle)
   // ISR-private state below
   bool step_state{false};

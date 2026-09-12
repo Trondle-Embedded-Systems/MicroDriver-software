@@ -36,7 +36,7 @@ enum ShaftDirection : uint8_t {
 };
 
 struct ISRPinTriggerStore {
-  bool *pin_triggered_ptr = nullptr;
+  volatile bool *pin_triggered_ptr = nullptr;
   static void IRAM_ATTR HOT pin_isr(ISRPinTriggerStore *arg) { (*(arg->pin_triggered_ptr)) = true; }
 };
 
@@ -132,7 +132,7 @@ class TMC2209Component : public TMC2209API, public Component {
   bool is_enabled_{false};
   bool check_gstat_{false};
   bool check_drv_status{false};
-  bool diag_triggered_{false};
+  volatile bool diag_triggered_{false};
   optional<uint8_t> toff_storage_{};
   /** */
 
