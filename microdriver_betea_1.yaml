@@ -10,7 +10,8 @@ external_components:
       url: https://github.com/Trondle-Embedded-Systems/MicroDriver-software.git
       ref: main
     components: [tmc2209_hub, tmc2209, stepper, husb238_i2c]
-    refresh: 1h
+    # Check main on every build so a motion fix is not hidden by a stale cache.
+    refresh: 0s
 
 esphome:
   name: ${device_name}

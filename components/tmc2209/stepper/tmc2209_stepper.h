@@ -97,8 +97,8 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   // Start with a short slow probe (so a door already at the stop is detected
   // after a gentle push instead of a full-speed run), then travel up to a full
   // door length at fast_speed, then continue slowly until StallGuard fires.
-  // A confirmed StallGuard stall in any phase stops motion and declares the
-  // end-stop immediately.
+  // A StallGuard DIAG event or the first valid stalled UART sample in any
+  // phase stops motion and declares the end-stop immediately.
   void start_endstop_seek(Direction direction, int32_t travel_length, float fast_speed, float slow_speed,
                           int32_t endpoint_position);
 
@@ -181,21 +181,20 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   int32_t endstop_seek_position_{0};
   int32_t endstop_seek_start_position_{0};
   int32_t endstop_seek_travel_length_{0};
-  bool endstop_seek_fast_armed_{false};
   float pre_endstop_seek_max_speed_{0.0f};
   uint32_t pre_endstop_seek_sgthrs_{0};
   uint32_t pre_endstop_seek_tcoolthrs_{0};
   static constexpr int32_t ENDSTOP_STALL_ARM_STEPS = 32;
   // Slow pulses at the start of every seek. Must comfortably exceed
-  // ENDSTOP_STALL_ARM_STEPS plus the confirmation samples at the slow speed.
+  // ENDSTOP_STALL_ARM_STEPS plus a UART poll at the slow speed.
   static constexpr int32_t ENDSTOP_PROBE_STEPS = 96;
-  // Fast travel and ordinary moves only watch StallGuard once the ramp is at
+  // Ordinary moves only watch StallGuard once the ramp is at
   // cruise speed: accelerating the door's inertia reads as load and would
   // trigger falsely.
   static constexpr float CRUISE_ARM_SPEED_RATIO = 0.95f;
 
-  // Shared StallGuard confirmation state (seek phases and obstacle detection
-  // never run at the same time).
+  // StallGuard polling state. Ordinary moves use consecutive confirmations;
+  // homing accepts the first valid sample. The paths never run together.
   int32_t stall_arm_position_{0};
   uint32_t last_stall_check_ms_{0};
   uint8_t consecutive_stalls_{0};
@@ -234,6 +233,7 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   bool sg_stalled_(uint32_t sgthrs);
   void arm_stall_detection_();
   bool stall_confirmed_(uint32_t sgthrs);
+  bool endstop_stalled_();
   int32_t endstop_seek_target_(int64_t distance);
   void enter_endstop_fast_travel_();
   void enter_endstop_slow_approach_();
