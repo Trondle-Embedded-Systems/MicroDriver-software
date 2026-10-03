@@ -97,8 +97,8 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   // Start with a short slow probe (so a door already at the stop is detected
   // after a gentle push instead of a full-speed run), then travel up to a full
   // door length at fast_speed, then continue slowly until StallGuard fires.
-  // Only the slow phase may declare the end-stop: a stall seen during the probe
-  // or fast travel just hands over to the slow approach for confirmation.
+  // A confirmed StallGuard stall in any phase stops motion and declares the
+  // end-stop immediately.
   void start_endstop_seek(Direction direction, int32_t travel_length, float fast_speed, float slow_speed,
                           int32_t endpoint_position);
 
@@ -236,7 +236,7 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   bool stall_confirmed_(uint32_t sgthrs);
   int32_t endstop_seek_target_(int64_t distance);
   void enter_endstop_fast_travel_();
-  void enter_endstop_slow_approach_(bool stalled);
+  void enter_endstop_slow_approach_();
   void end_endstop_seek_();
   void finish_endstop_seek_(bool stalled);
   void stop_motion_();

@@ -226,8 +226,8 @@ number:
   # Home +/- moves up to this distance fast relative to wherever the internal
   # counter currently is, then slowly until StallGuard confirms the end-stop.
   # That makes homing independent of manual door movement. It starts with a
-  # short slow probe and drops to slow speed on any stall, so a door that is
-  # already at that end-stop only gets a brief gentle push.
+  # short slow probe and stops at the first confirmed stall in any phase, so a
+  # door already at that end-stop only gets a brief gentle push.
   - platform: template
     name: Travel Length
     id: travel_length

@@ -317,20 +317,16 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
       break;
 
     case EndstopSeekPhase::PROBE: {
-      // A door that is already at the end-stop stalls within the first slow
-      // pulses. Hand over to the slow approach, which re-arms and confirms the
-      // stall on its own before the end-stop is accepted, so a false trigger
-      // right after enabling the driver only costs speed, never position.
+      // A confirmed stall in any seek phase is the homing endpoint.
       const int64_t travelled = std::abs(static_cast<int64_t>(this->current_position) -
                                          static_cast<int64_t>(this->endstop_seek_start_position_));
       if (this->stall_confirmed_(this->homing_sgthrs_)) {
-        ESP_LOGI(TAG, "End-stop seek: blocked at start, confirming at slow speed");
-        this->enter_endstop_slow_approach_(false);
+        this->finish_endstop_seek_(true);
       } else if (travelled >= ENDSTOP_PROBE_STEPS) {
         if (travelled < this->endstop_seek_travel_length_) {
           this->enter_endstop_fast_travel_();
         } else {
-          this->enter_endstop_slow_approach_(false);
+          this->enter_endstop_slow_approach_();
         }
       }
       break;
@@ -350,15 +346,11 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
       }
 
       if (stalled) {
-        // Hit something before the counted travel ended (door was moved by
-        // hand, or Travel Length is longer than the door). Don't keep grinding;
-        // drop to the slow approach, which verifies it is really the end-stop.
-        ESP_LOGI(TAG, "End-stop seek: stall during fast travel, confirming at slow speed");
-        this->enter_endstop_slow_approach_(true);
+        this->finish_endstop_seek_(true);
       } else if (this->has_reached_target()) {
         ESP_LOGI(TAG, "End-stop seek: fast travel complete, approaching at %.0f steps/s",
                  this->endstop_seek_slow_speed_);
-        this->enter_endstop_slow_approach_(false);
+        this->enter_endstop_slow_approach_();
       }
       break;
     }
@@ -471,13 +463,9 @@ void TMC2209Stepper::enter_endstop_fast_travel_() {
   this->set_target_locked_(this->endstop_seek_target_(this->endstop_seek_travel_length_ - travelled));
 }
 
-void TMC2209Stepper::enter_endstop_slow_approach_(bool stalled) {
+void TMC2209Stepper::enter_endstop_slow_approach_() {
   this->endstop_seek_phase_ = EndstopSeekPhase::SLOW_APPROACH;
   this->set_max_speed(this->endstop_seek_slow_speed_);
-  // Lowering max speed normally ramps down to it. After a stall the motor is
-  // blocked, so drop to the slow speed at once instead of grinding on.
-  if (stalled && this->current_speed_ > this->endstop_seek_slow_speed_)
-    this->current_speed_ = this->endstop_seek_slow_speed_;
   this->arm_stall_detection_();
   // Keep seeking in the same direction. One billion steps is deliberately
   // finite so the base stepper's signed distance calculation cannot overflow.
