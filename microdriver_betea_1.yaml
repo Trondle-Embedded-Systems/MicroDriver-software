@@ -41,10 +41,11 @@ esphome:
           # For holding torque switch back to `normal` and set a hold_current
           # (and drop auto_disable below) once power is stable.
           standstill_mode: freewheeling
-      # Apply the restored Max Speed / StallGuard Sensitivity settings (their
+      # Apply the restored Max Speed / Acceleration / StallGuard settings (their
       # set_actions don't run when a value is restored at boot).
       - lambda: |-
           id(main_stepper)->set_max_speed(id(max_speed).state);
+          id(main_stepper)->set_acceleration(id(acceleration_setting).state);
           id(main_stepper)->set_homing_sgthrs(
               static_cast<uint8_t>(lroundf(id(stallguard_sensitivity).state)));
 
@@ -310,6 +311,24 @@ number:
       - stepper.set_speed:
           id: main_stepper
           speed: !lambda return x;
+  # Runtime acceleration control, applied immediately and restored at boot.
+  # Higher values shorten the ramp to the selected Max Speed.
+  - platform: template
+    name: Acceleration
+    id: acceleration_setting
+    min_value: 100
+    max_value: 30000
+    step: 100
+    initial_value: 1500
+    unit_of_measurement: steps/s^2
+    icon: mdi:trending-up
+    restore_value: true
+    optimistic: true
+    mode: box
+    set_action:
+      - stepper.set_acceleration:
+          id: main_stepper
+          acceleration: !lambda return x;
   # Live jog / velocity control. Drag to run the motor CONTINUOUSLY at the set
   # speed and direction: positive = forward, negative = backward, 0 = stop.
   # Changing the value while running updates the speed on the fly (the motion
