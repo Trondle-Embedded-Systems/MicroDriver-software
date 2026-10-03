@@ -32,11 +32,20 @@ esphome:
       - tmc2209.currents:
           id: main_stepper
           run_current: 0.5 A      # conservative default — TUNE to your motor!
-          hold_current: 0.2 A     # (ignored while standstill_mode is freewheeling)
+          # FREEWHEEL only takes effect with IHOLD = 0 (datasheet 6.7), so the
+          # hold current must be 0 for freewheeling to actually happen.
+          hold_current: 0 A
           # Freewheeling = coils float at standstill: no idle holding current, no
           # idle chopper noise, and no motor load on VCC during the PD voltage jump.
-          # Switch back to `normal` once power is stable if you need holding torque.
+          # For holding torque switch back to `normal` and set a hold_current
+          # (and drop auto_disable below) once power is stable.
           standstill_mode: freewheeling
+      # Apply the restored Max Speed / StallGuard Sensitivity settings (their
+      # set_actions don't run when a value is restored at boot).
+      - lambda: |-
+          id(main_stepper)->set_max_speed(id(max_speed).state);
+          id(main_stepper)->set_homing_sgthrs(
+              static_cast<uint8_t>(lroundf(id(stallguard_sensitivity).state)));
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -70,9 +79,14 @@ api:
   encryption:
     key: !secret api_key
 
-# Web server (optional)
+# Web server (optional). Password-protected: it exposes the motor controls to
+# anyone on the LAN. Reuses the fallback-AP secret so no new secret is needed;
+# swap in dedicated web_username/web_password secrets if you prefer.
 web_server:
   port: 80
+  auth:
+    username: admin
+    password: !secret ap_password
 
 # I2C configuration
 i2c:
@@ -148,11 +162,16 @@ stepper:
     # Release ENN shortly after any move, Stop command, or end-stop detection.
     # No stallguard_homing sub-block: re-enabling must never seek a remembered
     # position when the door may have been moved manually.
+    # 200 ms: StealthChop's automatic tuning step AT#1 needs the motor at
+    # standstill on run current for up to 130 ms (datasheet 6.1); a well-tuned
+    # StealthChop gives steadier StallGuard readings.
     auto_disable:
-      settle: 100ms
+      settle: 200ms
 
 # Control buttons
 button:
+  # Cancels any move/Home and ramps down at the larger of acceleration and
+  # deceleration (~0.6 s / 270 steps from 900 steps/s) instead of slamming.
   - platform: template
     name: Stop Motor
     on_press:
@@ -189,17 +208,26 @@ button:
           id(main_stepper)->start_endstop_seek(
               esphome::stepper::Direction::BACKWARD, travel, id(max_speed).state,
               id(homing_slow_speed).state, 0);
+  # Declares "the door is closed right now". Refused while the motor moves,
+  # because resetting the counter mid-travel silently corrupts the position.
   - platform: template
     name: Reset Position
     on_press:
-      - stepper.report_position:
-          id: main_stepper
-          position: 0
+      - lambda: |-
+          if (id(main_stepper)->current_direction != esphome::stepper::Direction::STANDSTILL) {
+            ESP_LOGW("door", "Reset Position ignored: motor is moving");
+            return;
+          }
+          id(main_stepper)->report_position(0);
+          id(main_stepper)->set_position_known(true);
 
 # Target position + speed control
 number:
-  # Home +/- always moves this full distance relative to wherever the internal
-  # counter currently is. That makes homing independent of manual door movement.
+  # Home +/- moves up to this distance fast relative to wherever the internal
+  # counter currently is, then slowly until StallGuard confirms the end-stop.
+  # That makes homing independent of manual door movement. It starts with a
+  # short slow probe and drops to slow speed on any stall, so a door that is
+  # already at that end-stop only gets a brief gentle push.
   - platform: template
     name: Travel Length
     id: travel_length
@@ -208,6 +236,7 @@ number:
     step: 100
     initial_value: 3200
     unit_of_measurement: steps
+    restore_value: true
     optimistic: true
     mode: box
   - platform: template
@@ -218,10 +247,12 @@ number:
     step: 50
     initial_value: 200
     unit_of_measurement: steps/s
+    restore_value: true
     optimistic: true
     mode: box
-  # TMC2209 SGTHRS used by both phases of Home +/-.
+  # TMC2209 SGTHRS used by Home +/- and by obstacle detection on normal moves.
   # Higher values detect a stall earlier; lower values require more load.
+  # Applied immediately (and at boot), not only when a Home button is pressed.
   - platform: template
     name: StallGuard Sensitivity
     id: stallguard_sensitivity
@@ -232,6 +263,8 @@ number:
     restore_value: true
     optimistic: true
     mode: box
+    set_action:
+      - lambda: id(main_stepper)->set_homing_sgthrs(static_cast<uint8_t>(lroundf(x)));
   - platform: template
     name: Target Position
     id: target_position
@@ -245,13 +278,21 @@ number:
     # user's set target with the live position. Use the Current Position sensor
     # for monitoring; this entity is purely a target command.
     optimistic: true
+    # Absolute targets only make sense once Home +/- has located the door
+    # (unknown after boot, an obstacle stop or a driver reset), and are kept
+    # between the end-stops: 0 = closed (Home -), Travel Length = open (Home +).
     set_action:
-      - stepper.set_target:
-          id: main_stepper
-          target: !lambda return x;
+      - lambda: |-
+          if (!id(main_stepper)->is_position_known()) {
+            ESP_LOGW("door", "Target Position ignored: door position unknown, press Home + or Home - first");
+            return;
+          }
+          const float target = std::max(0.0f, std::min(x, id(travel_length).state));
+          id(main_stepper)->set_target(static_cast<int32_t>(lroundf(target)));
   # Runtime-adjustable max speed (steps/s). The stepper has no speed getter, so
   # this is an optimistic control that remembers its value and applies it via
-  # stepper.set_speed. `initial_value` matches the `max_speed:` set above.
+  # stepper.set_speed. `initial_value` matches the `max_speed:` set above; the
+  # restored value is applied in on_boot.
   - platform: template
     name: Max Speed
     id: max_speed
@@ -261,6 +302,7 @@ number:
     initial_value: 900
     unit_of_measurement: steps/s
     icon: mdi:speedometer
+    restore_value: true
     optimistic: true
     mode: box
     set_action:
@@ -283,14 +325,34 @@ number:
     icon: mdi:gauge
     optimistic: true
     mode: slider
+    # Releasing the jog (0) restores the Max Speed setting, so later moves don't
+    # silently keep running at the last jog speed. set_target comes before
+    # set_max_speed because a new target cancels a running Home +/- seek, which
+    # restores the pre-seek speed.
     set_action:
       - lambda: |-
           if (x == 0) {
             id(main_stepper)->stop();
+            id(main_stepper)->set_max_speed(id(max_speed).state);
           } else {
-            id(main_stepper)->set_max_speed(fabs(x));
             id(main_stepper)->set_target(x > 0 ? 1000000000 : -1000000000);
+            id(main_stepper)->set_max_speed(fabs(x));
           }
+
+# Stop Move / Target Position / Jog moves when StallGuard confirms the motor is
+# blocked at cruise speed (end-stop or obstacle) instead of forcing against it.
+# Uses StallGuard Sensitivity. Turn off if it stops normal moves by mistake.
+switch:
+  - platform: template
+    name: Obstacle Detection
+    id: obstacle_detection
+    icon: mdi:shield-alert-outline
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:
+      - lambda: id(main_stepper)->set_obstacle_detection(true);
+    turn_off_action:
+      - lambda: id(main_stepper)->set_obstacle_detection(false);
 
 # Position monitoring
 sensor:

@@ -77,17 +77,28 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
 
   void dump_config() override;
   void setup() override;
-  void IRAM_ATTR HOT loop() override;
+  // IRAM_ATTR/HOT only on the definition: repeating them here gives the two
+  // declarations different IRAM section names (-Wattributes warning).
+  void loop() override;
   void on_shutdown() override;
+  // Ramps down to standstill (cancelling a seek) instead of halting within one
+  // step; see begin_braking_().
   void stop() override;
   void enable(bool enable) override;
   // void enable(bool enable, bool recover_toff = true) override;
+  // Cancels a running seek. A target behind the motor, or closer than it can
+  // stop, is reached by braking to standstill first instead of reversing or
+  // halting at speed.
   void set_target(int32_t steps) override;
+  void on_update_speed() override;
   bool is_stalled() override;
 
   // Seek a mechanical end-stop without relying on the remembered step count.
-  // First travel a full door length at fast_speed, then continue slowly until
-  // StallGuard fires. StallGuard is deliberately ignored during fast travel.
+  // Start with a short slow probe (so a door already at the stop is detected
+  // after a gentle push instead of a full-speed run), then travel up to a full
+  // door length at fast_speed, then continue slowly until StallGuard fires.
+  // Only the slow phase may declare the end-stop: a stall seen during the probe
+  // or fast travel just hands over to the slow approach for confirmation.
   void start_endstop_seek(Direction direction, int32_t travel_length, float fast_speed, float slow_speed,
                           int32_t endpoint_position);
 
@@ -101,8 +112,20 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
     }
   }
   void set_home_speed(float speed) { this->home_speed_ = speed; }
+  // StallGuard threshold (SGTHRS) used by end-stop seeks, homing and obstacle
+  // detection.
   void set_homing_sgthrs(uint8_t v) { this->homing_sgthrs_ = v; }
   void set_homing_tcoolthrs(uint32_t v) { this->homing_tcoolthrs_ = v; }
+
+  // Stop ordinary moves (set_target) when StallGuard confirms the motor is
+  // blocked at cruise speed, instead of forcing against the obstacle forever.
+  void set_obstacle_detection(bool enable) { this->obstacle_detection_ = enable; }
+
+  // True once an end-stop seek has located the door (or the position was set
+  // by hand). Cleared at boot, after an obstacle stop and after a driver reset,
+  // because steps may have been lost.
+  bool is_position_known() const { return this->position_known_; }
+  void set_position_known(bool known) { this->position_known_ = known; }
 
  protected:
   HighFrequencyLoopRequester high_freq_;
@@ -116,7 +139,7 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   /** Pulses control */
   volatile bool step_state_ = false;
   volatile Direction direction_{Direction::STANDSTILL};
-  volatile time_t last_step_{0};
+  volatile uint32_t last_step_{0};
   // DEDGE (one microstep per edge) can only be programmed over UART. Without a
   // hub it stays at the driver default (step on rising edge), so the loop must
   // emit a full pulse per microstep instead of toggling a single edge.
@@ -150,23 +173,74 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   uint32_t pre_homing_sgthrs_{0};
   uint32_t pre_homing_tcoolthrs_{0};
 
-  enum class EndstopSeekPhase : uint8_t { IDLE, FAST_TRAVEL, SLOW_APPROACH };
+  enum class EndstopSeekPhase : uint8_t { IDLE, PROBE, FAST_TRAVEL, SLOW_APPROACH };
   EndstopSeekPhase endstop_seek_phase_{EndstopSeekPhase::IDLE};
   Direction endstop_seek_direction_{Direction::STANDSTILL};
+  float endstop_seek_fast_speed_{0.0f};
   float endstop_seek_slow_speed_{0.0f};
   int32_t endstop_seek_position_{0};
-  int32_t endstop_seek_stall_arm_position_{0};
+  int32_t endstop_seek_start_position_{0};
+  int32_t endstop_seek_travel_length_{0};
+  bool endstop_seek_fast_armed_{false};
   float pre_endstop_seek_max_speed_{0.0f};
   uint32_t pre_endstop_seek_sgthrs_{0};
   uint32_t pre_endstop_seek_tcoolthrs_{0};
-  uint32_t last_endstop_stall_check_ms_{0};
-  uint8_t endstop_seek_consecutive_stalls_{0};
-  static constexpr uint32_t ENDSTOP_STALL_POLL_INTERVAL_MS = 10;
   static constexpr int32_t ENDSTOP_STALL_ARM_STEPS = 32;
-  static constexpr uint8_t ENDSTOP_STALL_CONFIRMATIONS = 3;
+  // Slow pulses at the start of every seek. Must comfortably exceed
+  // ENDSTOP_STALL_ARM_STEPS plus the confirmation samples at the slow speed.
+  static constexpr int32_t ENDSTOP_PROBE_STEPS = 96;
+  // Fast travel and ordinary moves only watch StallGuard once the ramp is at
+  // cruise speed: accelerating the door's inertia reads as load and would
+  // trigger falsely.
+  static constexpr float CRUISE_ARM_SPEED_RATIO = 0.95f;
 
+  // Shared StallGuard confirmation state (seek phases and obstacle detection
+  // never run at the same time).
+  int32_t stall_arm_position_{0};
+  uint32_t last_stall_check_ms_{0};
+  uint8_t consecutive_stalls_{0};
+  static constexpr uint32_t STALL_POLL_INTERVAL_MS = 10;
+  static constexpr uint8_t STALL_CONFIRMATIONS = 3;
+
+  // Obstacle detection for ordinary moves
+  bool obstacle_detection_{false};
+  bool obstacle_armed_{false};
+  float obstacle_min_speed_{0.0f};
+  bool position_known_{false};
+
+  // Controlled stop: brake to standstill, then run what was queued meanwhile.
+  struct PendingSeek {
+    Direction direction;
+    int32_t travel_length;
+    float fast_speed;
+    float slow_speed;
+    int32_t endpoint_position;
+  };
+  bool braking_{false};
+  bool has_pending_target_{false};
+  int32_t pending_target_{0};
+  bool has_pending_seek_{false};
+  PendingSeek pending_seek_{};
+
+  // Speed/direction are only refreshed at the start of loop(), so they're stale
+  // in the pass where the last step lands; a reached target means standstill.
+  bool is_moving_() {
+    return this->current_speed_ > 0.0f && this->current_direction != Direction::STANDSTILL && !this->has_reached_target();
+  }
+  int32_t stopping_distance_() const;
+  void begin_braking_();
+  void halt_();
+  void abort_motion_();
+  bool sg_stalled_(uint32_t sgthrs);
+  void arm_stall_detection_();
+  bool stall_confirmed_(uint32_t sgthrs);
+  int32_t endstop_seek_target_(int64_t distance);
+  void enter_endstop_fast_travel_();
+  void enter_endstop_slow_approach_(bool stalled);
+  void end_endstop_seek_();
   void finish_endstop_seek_(bool stalled);
   void stop_motion_();
+  void set_target_locked_(int32_t steps);
 };
 
 }  // namespace tmc2209

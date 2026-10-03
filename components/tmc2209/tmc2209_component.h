@@ -134,6 +134,8 @@ class TMC2209Component : public TMC2209API, public Component {
   bool check_drv_status{false};
   volatile bool diag_triggered_{false};
   optional<uint8_t> toff_storage_{};
+  uint32_t last_gstat_poll_ms_{0};
+  static constexpr uint32_t GSTAT_POLL_INTERVAL_MS = 250;
   /** */
 
   ISRPinTriggerStore diag_isr_store_;

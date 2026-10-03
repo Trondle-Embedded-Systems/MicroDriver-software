@@ -2,13 +2,15 @@
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 
+#include <algorithm>
+
 namespace esphome {
 namespace stepper {
 
 static const char *const TAG = "stepper";
 
 void IRAM_ATTR HOT Stepper::calculate_speed_(uint32_t now = micros()) {
-  // delta t since last calculation in seconds
+  // micros() wraps every ~71.6 minutes; unsigned subtraction preserves dt.
   float dt = uint32_t(now - this->last_calculation_) * 1e-6f;
   this->last_calculation_ = now;
   if (this->has_reached_target()) {
@@ -22,13 +24,20 @@ void IRAM_ATTR HOT Stepper::calculate_speed_(uint32_t now = micros()) {
   float v_squared = this->current_speed_ * this->current_speed_;
   float steps_to_decelerate = v_squared / (2 * this->deceleration_);
   if (num_steps <= steps_to_decelerate) {
-    // need to start decelerating
-    this->current_speed_ -= this->deceleration_ * dt;
+    // need to start decelerating. Brake as hard as it takes to still stop AT
+    // the target: normally that is the configured deceleration, but a target
+    // moved closer mid-move would otherwise be hit at speed (abrupt halt).
+    const float needed = v_squared / (2.0f * static_cast<float>(num_steps));
+    this->current_speed_ -= std::max(this->deceleration_, needed) * dt;
+  } else if (this->current_speed_ > this->max_speed_) {
+    // max speed was lowered mid-move: ramp down to it instead of jumping
+    this->current_speed_ = std::max(this->max_speed_, this->current_speed_ - this->deceleration_ * dt);
   } else {
     // we can still accelerate
-    this->current_speed_ += this->acceleration_ * dt;
+    this->current_speed_ = std::min(this->max_speed_, this->current_speed_ + this->acceleration_ * dt);
   }
-  this->current_speed_ = clamp(this->current_speed_, 0.0f, this->max_speed_);
+  if (this->current_speed_ < 0.0f)
+    this->current_speed_ = 0.0f;
 }
 Direction IRAM_ATTR HOT Stepper::should_step_(uint32_t now = micros()) {
   this->calculate_speed_(now);

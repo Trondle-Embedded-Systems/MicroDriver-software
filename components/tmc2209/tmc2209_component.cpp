@@ -2,6 +2,9 @@
 #include "tmc2209_component.h"
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
+#include "esphome/core/hal.h"
+
+#include <cmath>
 
 namespace esphome {
 namespace tmc2209 {
@@ -58,6 +61,10 @@ void TMC2209Component::setup() {
   if (ic_version != 0x21) {
     ESP_LOGW(TAG, "Unexpected IC version 0x%02X (expected 0x21 for TMC2209)", ic_version);
   }
+
+  // Acknowledge the power-on flags (GSTAT is write-1-to-clear) so the reset
+  // poll in loop() only reacts to resets that happen from now on.
+  this->write_register(GSTAT, 0b111);
 
   this->write_field(PDN_DISABLE_FIELD, true);
   this->write_field(TEST_MODE_FIELD, false);
@@ -277,6 +284,23 @@ void TMC2209Component::loop() {
       // TODO: maybe do something with INDEX for warnings
     }
   }
+
+  // Watch for driver resets even when no on_status/on_stall automation enables
+  // the DIAG path above: after a supply dip the TMC2209 silently reverts to its
+  // defaults (wrong current, microstepping and DEDGE on boards with VREF
+  // unconnected) until reset_handler_ replays the registers.
+  if (this->bus_enabled()) {
+    const uint32_t now = millis();
+    if (now - this->last_gstat_poll_ms_ >= GSTAT_POLL_INTERVAL_MS) {
+      this->last_gstat_poll_ms_ = now;
+      int32_t gstat = 0;
+      if (this->read_register_checked(GSTAT, &gstat)) {
+        this->reset_handler_.check((bool) this->extract_field(gstat, RESET_FIELD));
+        this->drv_err_handler_.check((bool) this->extract_field(gstat, DRV_ERR_FIELD));
+        this->uvcp_handler_.check((bool) this->extract_field(gstat, UV_CP_FIELD));
+      }
+    }
+  }
 }
 
 bool TMC2209Component::is_stalled() {
@@ -292,7 +316,8 @@ bool TMC2209Component::is_stalled() {
   if (!this->read_register_checked(SG_RESULT, &sgresult)) {
     return false;
   }
-  return (sgthrs << 1) > sgresult;
+  // Datasheet (SGTHRS): a stall is signaled with SG_RESULT <= SGTHRS*2.
+  return sgresult <= (sgthrs << 1);
 }
 
 uint16_t TMC2209Component::get_microsteps() { return MRES_TO_MS(this->read_field(MRES_FIELD)); }
@@ -307,7 +332,11 @@ void TMC2209Component::set_microsteps(uint16_t ms) {
 }
 
 float TMC2209Component::get_motor_load() {
-  const int32_t result = this->read_register(SG_RESULT);
+  // A failed read returns 0, which would show up as a maximum-load spike;
+  // report "unknown" instead.
+  int32_t result = 0;
+  if (!this->read_register_checked(SG_RESULT, &result))
+    return NAN;
   return (510.0 - (float) result) / (510.0 - (int32_t) this->read_register(SGTHRS) * 2.0);
 }
 

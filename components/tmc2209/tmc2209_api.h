@@ -130,7 +130,9 @@ class TMC2209API : public Parented<TMC2209Hub> {
 
  private:
   uint8_t dirty_bits_[REGISTER_COUNT / 8] = {0};
-  int32_t shadow_register_[REGISTER_COUNT];
+  // Zeroed: write-only registers are read-modify-written from this cache, and
+  // seeks save/restore SGTHRS/TCOOLTHRS through it. 0 matches their reset value.
+  int32_t shadow_register_[REGISTER_COUNT] = {0};
 
   void set_dirty_bit_(uint8_t index, bool value);
   bool get_dirty_bit_(uint8_t index);

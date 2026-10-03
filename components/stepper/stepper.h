@@ -45,8 +45,10 @@ class Stepper {
   volatile Direction current_direction{Direction::STANDSTILL};
 
  protected:
-  void IRAM_ATTR HOT calculate_speed_(uint32_t now);
-  Direction IRAM_ATTR HOT should_step_(uint32_t now);
+  // IRAM_ATTR/HOT only on the definitions: repeating them here gives the two
+  // declarations different IRAM section names (-Wattributes warning).
+  void calculate_speed_(uint32_t now);
+  Direction should_step_(uint32_t now);
 
   float acceleration_{1e6f};
   float deceleration_{1e6f};
