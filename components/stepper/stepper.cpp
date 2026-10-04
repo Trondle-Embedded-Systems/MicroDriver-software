@@ -8,6 +8,8 @@ namespace esphome {
 namespace stepper {
 
 static const char *const TAG = "stepper";
+// Longest time step the acceleration ramp integrates in one update (s).
+static constexpr float MAX_ACCEL_DT = 0.005f;
 
 void IRAM_ATTR HOT Stepper::calculate_speed_(uint32_t now = micros()) {
   // micros() wraps every ~71.6 minutes; unsigned subtraction preserves dt.
@@ -33,8 +35,11 @@ void IRAM_ATTR HOT Stepper::calculate_speed_(uint32_t now = micros()) {
     // max speed was lowered mid-move: ramp down to it instead of jumping
     this->current_speed_ = std::max(this->max_speed_, this->current_speed_ - this->deceleration_ * dt);
   } else {
-    // we can still accelerate
-    this->current_speed_ = std::min(this->max_speed_, this->current_speed_ + this->acceleration_ * dt);
+    // we can still accelerate. Cap the step of a single update: after a long
+    // loop pass (WiFi, UART) a high acceleration would otherwise jump the step
+    // rate by hundreds of steps/s at once, enough to make the motor lose steps.
+    this->current_speed_ =
+        std::min(this->max_speed_, this->current_speed_ + this->acceleration_ * std::min(dt, MAX_ACCEL_DT));
   }
   if (this->current_speed_ < 0.0f)
     this->current_speed_ = 0.0f;

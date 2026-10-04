@@ -188,23 +188,35 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   // Slow pulses at the start of every seek. Must comfortably exceed
   // ENDSTOP_STALL_ARM_STEPS plus a UART poll at the slow speed.
   static constexpr int32_t ENDSTOP_PROBE_STEPS = 96;
-  // Ordinary moves only watch StallGuard once the ramp is at
-  // cruise speed: accelerating the door's inertia reads as load and would
-  // trigger falsely.
+  // Ordinary moves only watch StallGuard while the ramp is at cruise speed
+  // (within this ratio of max speed): accelerating the door's inertia reads as
+  // load, and braking is not a valid StallGuard condition either.
   static constexpr float CRUISE_ARM_SPEED_RATIO = 0.95f;
+
+  // After a hard acceleration StealthChop's automatic current regulation
+  // (PWM_SCALE/PWM_GRAD) lags and the rotor rings, so SG_RESULT reads near 0
+  // for a while with no load at all. Obstacle detection waits this long at
+  // cruise speed before trusting SG_RESULT.
+  static constexpr uint32_t OBSTACLE_SETTLE_MS = 250;
+  // PWM_SCALE_SUM at (or near) 255 means StealthChop ran out of supply voltage
+  // (back-EMF at high speed): the current is no longer regulated and SG_RESULT
+  // drops without any load, so such samples are not trusted.
+  static constexpr int32_t PWM_SCALE_SATURATED = 250;
 
   // StallGuard polling state. Ordinary moves use consecutive confirmations;
   // homing accepts the first valid sample. The paths never run together.
   int32_t stall_arm_position_{0};
+  uint32_t stall_arm_ms_{0};
   uint32_t last_stall_check_ms_{0};
   uint8_t consecutive_stalls_{0};
+  int32_t last_sg_result_{-1};
+  int32_t last_pwm_scale_sum_{-1};
   static constexpr uint32_t STALL_POLL_INTERVAL_MS = 10;
-  static constexpr uint8_t STALL_CONFIRMATIONS = 3;
+  static constexpr uint8_t STALL_CONFIRMATIONS = 5;
 
   // Obstacle detection for ordinary moves
   bool obstacle_detection_{false};
   bool obstacle_armed_{false};
-  float obstacle_min_speed_{0.0f};
   bool position_known_{false};
 
   // Controlled stop: brake to standstill, then run what was queued meanwhile.

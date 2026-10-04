@@ -313,23 +313,24 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
     ESP_LOGI(TAG, "Homing complete at %d, proceeding to %d", confirmed_home, this->homing_pending_target_);
   }
 
-  // Obstacle detection for ordinary moves: arm at cruise speed, keep
-  // watching while still reasonably fast.
+  // Obstacle detection for ordinary moves: only while cruising. Leaving cruise
+  // (deceleration, max speed changed) disarms, so the settle time restarts.
+  const bool cruising = std::fabs(this->current_speed_ - this->max_speed_) <=
+                        this->max_speed_ * (1.0f - CRUISE_ARM_SPEED_RATIO);
   if (this->obstacle_detection_ && this->endstop_seek_phase_ == EndstopSeekPhase::IDLE && !this->braking_ &&
-      !this->is_homing_ && this->is_moving_()) {
+      !this->is_homing_ && this->is_moving_() && cruising) {
     if (!this->obstacle_armed_) {
-      if (this->current_speed_ >= this->max_speed_ * CRUISE_ARM_SPEED_RATIO) {
-        this->arm_stall_detection_();
-        this->obstacle_armed_ = true;
-        this->obstacle_min_speed_ = this->current_speed_ * 0.5f;
-      }
-    } else if (this->current_speed_ >= this->obstacle_min_speed_ && this->stall_confirmed_(this->homing_sgthrs_)) {
+      this->arm_stall_detection_();
+      this->obstacle_armed_ = true;
+    } else if (this->stall_confirmed_(this->homing_sgthrs_)) {
       // Blocked: stop right away rather than ramping down against the obstacle.
-      ESP_LOGW(TAG, "Obstacle: motor stalled at position %d, stopped", (int) this->current_position);
+      ESP_LOGW(TAG, "Obstacle: motor stalled at position %d at %.0f steps/s (SG_RESULT %d, SGTHRS %u, PWM_SCALE_SUM %d), stopped",
+               (int) this->current_position, this->current_speed_, (int) this->last_sg_result_,
+               (unsigned) this->homing_sgthrs_, (int) this->last_pwm_scale_sum_);
       this->halt_();
       this->position_known_ = false;
     }
-  } else if (!this->is_moving_()) {
+  } else {
     this->obstacle_armed_ = false;
   }
 
@@ -421,9 +422,11 @@ bool TMC2209Stepper::sg_stalled_(uint32_t sgthrs) {
 }
 
 void TMC2209Stepper::arm_stall_detection_() {
+  const uint32_t now_ms = millis();
   this->stall_arm_position_ = this->current_position;
+  this->stall_arm_ms_ = now_ms;
   this->consecutive_stalls_ = 0;
-  this->last_stall_check_ms_ = millis() - STALL_POLL_INTERVAL_MS;
+  this->last_stall_check_ms_ = now_ms - STALL_POLL_INTERVAL_MS;
 }
 
 bool TMC2209Stepper::stall_confirmed_(uint32_t sgthrs) {
@@ -432,15 +435,32 @@ bool TMC2209Stepper::stall_confirmed_(uint32_t sgthrs) {
     return false;
   this->last_stall_check_ms_ = now_ms;
 
-  // SG_RESULT is not meaningful at standstill or during the first few
-  // acceleration steps. Allow enough pulses since arming for StallGuard to
-  // become valid, then require several consecutive matching samples.
+  // SG_RESULT is not meaningful at standstill, during the first steps, or
+  // while StealthChop is still settling after the acceleration ramp. Wait for
+  // both, then require several consecutive matching samples.
   const int64_t steps_since_arm = std::abs(static_cast<int64_t>(this->current_position) -
                                            static_cast<int64_t>(this->stall_arm_position_));
-  if (steps_since_arm < ENDSTOP_STALL_ARM_STEPS)
+  if (steps_since_arm < ENDSTOP_STALL_ARM_STEPS || (now_ms - this->stall_arm_ms_) < OBSTACLE_SETTLE_MS)
     return false;
 
-  if (this->sg_stalled_(sgthrs)) {
+  bool stalled = false;
+  if (this->current_direction != Direction::STANDSTILL &&
+      this->read_register_checked(SG_RESULT, &this->last_sg_result_) &&
+      this->last_sg_result_ <= static_cast<int32_t>(sgthrs << 1)) {
+    // Only trust a low SG_RESULT while StealthChop still regulates the current.
+    int32_t pwm_scale = 0;
+    if (this->read_register_checked(PWM_SCALE, &pwm_scale)) {
+      this->last_pwm_scale_sum_ = static_cast<int32_t>(this->extract_field(pwm_scale, PWM_SCALE_SUM_FIELD));
+      if (this->last_pwm_scale_sum_ >= PWM_SCALE_SATURATED) {
+        ESP_LOGD(TAG, "Obstacle check: SG_RESULT %d ignored, StealthChop voltage-limited (PWM_SCALE_SUM %d)",
+                 (int) this->last_sg_result_, (int) this->last_pwm_scale_sum_);
+      } else {
+        stalled = true;
+      }
+    }
+  }
+
+  if (stalled) {
     if (this->consecutive_stalls_ < STALL_CONFIRMATIONS)
       this->consecutive_stalls_++;
   } else {
