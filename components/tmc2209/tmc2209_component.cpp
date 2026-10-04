@@ -104,7 +104,7 @@ void TMC2209Component::setup() {
 
         // this->stall_handler_.check(gstat == 0b000);
         if (gstat == 0b000) {
-          this->on_stall_callback_.call();
+          this->handle_stall_event_();
         }
 
         this->reset_handler_.check((bool) this->extract_field(gstat, RESET_FIELD));
@@ -125,7 +125,7 @@ void TMC2209Component::setup() {
       }  // fall
   );
 
-  this->stall_handler_.set_on_rise_callback([this]() { this->on_stall_callback_.call(); });
+  this->stall_handler_.set_on_rise_callback([this]() { this->handle_stall_event_(); });
 
   this->reset_handler_.set_callbacks(  // gstat reset
       [this]() {                       // rise

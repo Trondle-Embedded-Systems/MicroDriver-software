@@ -97,8 +97,8 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   // Start with a short slow probe (so a door already at the stop is detected
   // after a gentle push instead of a full-speed run), then travel up to a full
   // door length at fast_speed, then continue slowly until StallGuard fires.
-  // A StallGuard DIAG event or the first valid stalled UART sample in any
-  // phase stops motion and declares the end-stop immediately.
+   // StallGuard is qualified at settled speed; raw acceleration DIAG events
+   // cannot declare an endpoint or bypass qualification through automations.
   void start_endstop_seek(Direction direction, int32_t travel_length, float fast_speed, float slow_speed,
                           int32_t endpoint_position);
 
@@ -128,6 +128,7 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   void set_position_known(bool known) { this->position_known_ = known; }
 
  protected:
+  void handle_stall_event_() override {}  // Motion loop qualifies UART samples.
   HighFrequencyLoopRequester high_freq_;
   ControlMethod control_method_{ControlMethod::CONTROL_UNSET};
 
@@ -184,14 +185,15 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   float pre_endstop_seek_max_speed_{0.0f};
   uint32_t pre_endstop_seek_sgthrs_{0};
   uint32_t pre_endstop_seek_tcoolthrs_{0};
+  bool endstop_stall_armed_{false};
+  bool endstop_sample_valid_{false};
+  static constexpr uint32_t ENDSTOP_SETTLE_MS = 80;
+  static constexpr uint8_t ENDSTOP_CONFIRMATIONS = 2;
   static constexpr int32_t ENDSTOP_STALL_ARM_STEPS = 32;
   // Slow pulses at the start of every seek. Must comfortably exceed
   // ENDSTOP_STALL_ARM_STEPS plus a UART poll at the slow speed.
   static constexpr int32_t ENDSTOP_PROBE_STEPS = 96;
-  // Ordinary moves only watch StallGuard while the ramp is at cruise speed
-  // (within this ratio of max speed): accelerating the door's inertia reads as
-  // load, and braking is not a valid StallGuard condition either.
-  static constexpr float CRUISE_ARM_SPEED_RATIO = 0.95f;
+  // Ordinary moves only watch StallGuard once the ramp reaches cruise speed.
 
   // After a hard acceleration StealthChop's automatic current regulation
   // (PWM_SCALE/PWM_GRAD) lags and the rotor rings, so SG_RESULT reads near 0
@@ -203,8 +205,8 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   // drops without any load, so such samples are not trusted.
   static constexpr int32_t PWM_SCALE_SATURATED = 250;
 
-  // StallGuard polling state. Ordinary moves use consecutive confirmations;
-  // homing accepts the first valid sample. The paths never run together.
+  // Shared polling state. Ordinary moves and end-stop seeks use distinct
+  // settle times and confirmation counts. The paths never run together.
   int32_t stall_arm_position_{0};
   uint32_t stall_arm_ms_{0};
   uint32_t last_stall_check_ms_{0};

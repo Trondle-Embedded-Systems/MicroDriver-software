@@ -108,6 +108,7 @@ class TMC2209Component : public TMC2209API, public Component {
   void write_speed(int32_t speed) { this->write_field(VACTUAL_FIELD, this->speed_to_vactual(speed)); }
 
  protected:
+  virtual void handle_stall_event_() { this->on_stall_callback_.call(); }
   /** Setup / configuration */
   bool use_analog_current_scale_{false};
   bool config_dump_include_registers_{false};

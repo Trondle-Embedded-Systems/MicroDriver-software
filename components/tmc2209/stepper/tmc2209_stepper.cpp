@@ -82,7 +82,7 @@ bool IRAM_ATTR StepPulseStore::timer_isr(gptimer_handle_t timer, const gptimer_a
 
 void TMC2209Stepper::dump_config() {
   ESP_LOGCONFIG(TAG, "TMC2209 Stepper:");
-  ESP_LOGCONFIG(TAG, "  Home +/-: stop on first StallGuard event (DIAG or UART)");
+  ESP_LOGCONFIG(TAG, "  Home +/-: settled-speed StallGuard qualification");
   LOG_STEPPER(this);
   LOG_TMC2209(this);
 }
@@ -98,16 +98,8 @@ void TMC2209Stepper::setup() {
     return;
   }
 
-  // Home +/- must consume the driver's StallGuard event even when the YAML
-  // has no on_stall automation. DIAG is already qualified against GSTAT by
-  // the base component, so driver errors do not declare a homing endpoint.
+  // Raw DIAG still reports driver errors, but stalls are qualified in loop().
   this->set_enable_stall_detection(true);
-  this->add_on_stall_callback([this]() {
-    if (this->endstop_seek_phase_ != EndstopSeekPhase::IDLE) {
-      ESP_LOGI(TAG, "End-stop seek: StallGuard DIAG triggered, stopping");
-      this->finish_endstop_seek_(true);
-    }
-  });
 
   this->high_freq_.start();
 
@@ -196,9 +188,7 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
   this->current_direction = this->target_position > position ? Direction::FORWARD :
       (this->target_position < position ? Direction::BACKWARD : Direction::STANDSTILL);
 
-  // Check before issuing more motion. Homing accepts the first valid
-  // StallGuard sample, including during acceleration/deceleration; it must
-  // not wait for cruise speed or re-arm on each phase transition.
+  // Check before issuing more motion; acceleration cannot declare an endpoint.
   if (this->endstop_seek_phase_ != EndstopSeekPhase::IDLE && this->endstop_stalled_()) {
     ESP_LOGI(TAG, "End-stop seek: StallGuard threshold reached, stopping");
     this->finish_endstop_seek_(true);
@@ -315,8 +305,7 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
 
   // Obstacle detection for ordinary moves: only while cruising. Leaving cruise
   // (deceleration, max speed changed) disarms, so the settle time restarts.
-  const bool cruising = std::fabs(this->current_speed_ - this->max_speed_) <=
-                        this->max_speed_ * (1.0f - CRUISE_ARM_SPEED_RATIO);
+  const bool cruising = std::fabs(this->current_speed_ - this->max_speed_) <= 0.01f;
   if (this->obstacle_detection_ && this->endstop_seek_phase_ == EndstopSeekPhase::IDLE && !this->braking_ &&
       !this->is_homing_ && this->is_moving_() && cruising) {
     if (!this->obstacle_armed_) {
@@ -329,6 +318,7 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
                (unsigned) this->homing_sgthrs_, (int) this->last_pwm_scale_sum_);
       this->halt_();
       this->position_known_ = false;
+      this->on_stall_callback_.call();
     }
   } else {
     this->obstacle_armed_ = false;
@@ -341,7 +331,9 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
     case EndstopSeekPhase::PROBE: {
       const int64_t travelled = std::abs(static_cast<int64_t>(this->current_position) -
                                          static_cast<int64_t>(this->endstop_seek_start_position_));
-      if (travelled >= ENDSTOP_PROBE_STEPS) {
+      if (travelled >= ENDSTOP_PROBE_STEPS && this->endstop_stall_armed_ && this->endstop_sample_valid_ &&
+          millis() - this->stall_arm_ms_ >= ENDSTOP_SETTLE_MS + 2 * STALL_POLL_INTERVAL_MS &&
+          this->consecutive_stalls_ == 0) {
         if (travelled < this->endstop_seek_travel_length_) {
           this->enter_endstop_fast_travel_();
         } else {
@@ -471,16 +463,34 @@ bool TMC2209Stepper::stall_confirmed_(uint32_t sgthrs) {
 
 bool TMC2209Stepper::endstop_stalled_() {
   const uint32_t now_ms = millis();
+  // A phase speed change must re-qualify, even when DIAG stays high. Polling
+  // avoids depending on a fresh rising edge after the acceleration transient.
+  const bool settled_speed = this->is_moving_() &&
+      std::fabs(this->current_speed_ - this->max_speed_) <= 0.01f;
+  if (!settled_speed) {
+    this->endstop_stall_armed_ = false;
+    this->endstop_sample_valid_ = false;
+    this->consecutive_stalls_ = 0;
+    return false;
+  }
+  if (!this->endstop_stall_armed_) {
+    this->arm_stall_detection_();
+    this->endstop_stall_armed_ = true;
+  }
+  if (now_ms - this->stall_arm_ms_ < ENDSTOP_SETTLE_MS)
+    return false;
   if ((now_ms - this->last_stall_check_ms_) < STALL_POLL_INTERVAL_MS)
     return false;
   this->last_stall_check_ms_ = now_ms;
 
-  // Only the UART fallback needs a startup allowance for an initially stale
-  // SG_RESULT. A qualified DIAG event stops homing immediately, without this
-  // allowance. Count from the start of the seek, never from cruise speed.
-  const int64_t travelled = std::abs(static_cast<int64_t>(this->current_position) -
-                                     static_cast<int64_t>(this->endstop_seek_start_position_));
-  return travelled >= ENDSTOP_STALL_ARM_STEPS && this->sg_stalled_(this->homing_sgthrs_);
+  this->endstop_sample_valid_ = this->read_register_checked(SG_RESULT, &this->last_sg_result_);
+  if (this->endstop_sample_valid_ && this->last_sg_result_ <= static_cast<int32_t>(this->homing_sgthrs_ << 1)) {
+    if (this->consecutive_stalls_ < ENDSTOP_CONFIRMATIONS)
+      this->consecutive_stalls_++;
+  } else {
+    this->consecutive_stalls_ = 0;
+  }
+  return this->consecutive_stalls_ >= ENDSTOP_CONFIRMATIONS;
 }
 
 int32_t TMC2209Stepper::endstop_seek_target_(int64_t distance) {
@@ -494,12 +504,14 @@ void TMC2209Stepper::enter_endstop_fast_travel_() {
   const int64_t travelled = std::abs(static_cast<int64_t>(this->current_position) -
                                      static_cast<int64_t>(this->endstop_seek_start_position_));
   this->endstop_seek_phase_ = EndstopSeekPhase::FAST_TRAVEL;
+  this->endstop_stall_armed_ = false;
   this->set_max_speed(this->endstop_seek_fast_speed_);
   this->set_target_locked_(this->endstop_seek_target_(this->endstop_seek_travel_length_ - travelled));
 }
 
 void TMC2209Stepper::enter_endstop_slow_approach_() {
   this->endstop_seek_phase_ = EndstopSeekPhase::SLOW_APPROACH;
+  this->endstop_stall_armed_ = false;
   this->set_max_speed(this->endstop_seek_slow_speed_);
   // Keep seeking in the same direction. One billion steps is deliberately
   // finite so the base stepper's signed distance calculation cannot overflow.
@@ -514,6 +526,12 @@ void TMC2209Stepper::start_endstop_seek(Direction direction, int32_t travel_leng
   }
   if (!this->bus_enabled()) {
     ESP_LOGE(TAG, "End-stop seek requires a working UART connection for StallGuard");
+    return;
+  }
+
+  if (this->position_known_ && this->current_position == endpoint_position && !this->is_moving_()) {
+    this->enable(false);
+    ESP_LOGI(TAG, "End-stop seek: already at requested endpoint; motor remains off");
     return;
   }
 
@@ -552,6 +570,7 @@ void TMC2209Stepper::start_endstop_seek(Direction direction, int32_t travel_leng
   this->endstop_seek_start_position_ = this->current_position;
   this->endstop_seek_travel_length_ = travel_length;
   this->endstop_seek_phase_ = EndstopSeekPhase::PROBE;
+  this->endstop_stall_armed_ = false;
   this->arm_stall_detection_();
   this->set_max_speed(slow_speed);
   this->enable(true);

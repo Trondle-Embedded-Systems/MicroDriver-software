@@ -643,6 +643,26 @@ button:
 
 ### Auto-disable with StallGuard homing
 
+#### Qualified door end-stop seeks
+
+`start_endstop_seek` filters startup and speed-change load. Raw DIAG stall
+edges cannot stop a stepper seek or invoke its `on_stall` automation; driver
+fault handling remains active. Each seek phase must reach its configured speed
+and settle for 80 ms, then two valid low `SG_RESULT` samples, polled 10 ms
+apart, confirm contact. The configured SGTHRS sensitivity is unchanged.
+
+The startup probe remains at the slow speed for at least 96 steps and until
+settled-speed sampling confirms that the motor is not stalled. It cannot
+accelerate straight into a stop just because acceleration consumed 96 steps.
+Contact stops pulses and disables the driver. A repeated seek toward an already
+known endpoint leaves the driver disabled. After boot or position invalidation,
+the slow probe is still required. Step counts cannot detect manual movement of
+the released door; invalidate the reference when moving it by hand.
+
+For ordinary target moves, enable `set_obstacle_detection(true)` to obtain
+qualified contact stops and `on_stall` callbacks. These use the existing
+cruise-speed settling and confirmation filter rather than raw DIAG edges.
+
 When `auto_disable` is configured the driver is automatically de-energised after the motor has held its target for `settle` milliseconds. The next `stepper.set_target` call re-energises and (optionally) runs a StallGuard homing pass before proceeding.
 
 **`auto_disable` configuration keys** (under `stepper: - platform: tmc2209`):
@@ -1203,4 +1223,3 @@ stepper:
 [highfrequencylooprequester]: <https://github.com/esphome/esphome/blob/9713458368dfb9fd9aab8016cfe8c85d77b04887/esphome/core/helpers.h#L609> "HighFrequencyLoopRequester class"
 
 [tmcapi-tmc2209-hwa]: <./tmc2209_api_registers.h> "TMC-API TMC2209 Hardware Abstractions"
-
