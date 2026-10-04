@@ -6,6 +6,7 @@
 #include "esphome/core/hal.h"
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <limits>
 
@@ -287,7 +288,7 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
         (millis() - this->target_reached_at_ad_ms_) >= this->auto_disable_ms_) {
       this->enable(false);
       this->auto_disabled_ = true;
-      ESP_LOGD(TAG, "Auto-disabled after %u ms settle", this->auto_disable_ms_);
+      ESP_LOGD(TAG, "Auto-disabled after %" PRIu32 " ms settle", this->auto_disable_ms_);
     }
   }
 
@@ -300,7 +301,8 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
     this->write_register(TCOOLTHRS, this->pre_homing_tcoolthrs_);
     this->is_homing_ = false;
     this->set_target_locked_(this->homing_pending_target_);
-    ESP_LOGI(TAG, "Homing complete at %d, proceeding to %d", confirmed_home, this->homing_pending_target_);
+    ESP_LOGI(TAG, "Homing complete at %" PRId32 ", proceeding to %" PRId32, confirmed_home,
+             this->homing_pending_target_);
   }
 
   // Obstacle detection for ordinary moves: only while cruising. Leaving cruise
@@ -580,7 +582,7 @@ void TMC2209Stepper::start_endstop_seek(Direction direction, int32_t travel_leng
   // decelerates inside it (SG_RESULT is unreliable at low speed). Switching to
   // fast travel then just raises max speed and accelerates seamlessly.
   this->set_target_locked_(this->endstop_seek_target_(1000000000LL));
-  ESP_LOGI(TAG, "End-stop seek: probing %d steps at %.0f steps/s, then up to %d steps at %.0f steps/s",
+  ESP_LOGI(TAG, "End-stop seek: probing %" PRId32 " steps at %.0f steps/s, then up to %" PRId32 " steps at %.0f steps/s",
            static_cast<int>(direction) * ENDSTOP_PROBE_STEPS, slow_speed, static_cast<int>(direction) * travel_length,
            fast_speed);
 }
@@ -608,7 +610,7 @@ void TMC2209Stepper::finish_endstop_seek_(bool stalled) {
     // has already been cleared above.
     TMC2209Component::enable(false);
     this->auto_disabled_ = true;
-    ESP_LOGI(TAG, "End-stop found; position set to %d and driver disabled", this->endstop_seek_position_);
+    ESP_LOGI(TAG, "End-stop found; position set to %" PRId32 " and driver disabled", this->endstop_seek_position_);
   }
 }
 
@@ -654,7 +656,7 @@ void TMC2209Stepper::set_target(int32_t steps) {
         this->enable(true);
         this->auto_disabled_ = false;
         this->set_target_locked_(nearest);
-        ESP_LOGI(TAG, "StallGuard homing: nearest end-stop %d at %.0f steps/s", nearest, this->home_speed_);
+        ESP_LOGI(TAG, "StallGuard homing: nearest end-stop %" PRId32 " at %.0f steps/s", nearest, this->home_speed_);
         return;
       }
     }
