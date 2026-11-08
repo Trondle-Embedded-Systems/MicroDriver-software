@@ -52,6 +52,9 @@
   let collapsed = false;
   let sseConnected = false;
   let rafPending = false;
+  let liveUsbVoltage = null;
+  let liveUsbCurrent = null;
+  let liveUsbTargetV = 20;
 
   const TRACE_RE =
     /SGTRACE,(\d+),(-?\d+),(-?\d+),([\d.-]+),(-?\d+),(\d+),(-?\d+),(-?\d+),([01]),([01])(?:,(-?\d+),([\d.-]+),([\d.-]+),(\d+),(\d+),(-?\d+),([01]),([01]),([\d.-]+),(\d+))?/;
@@ -135,6 +138,25 @@
       sseConnected = true;
       parseLogMessage(e.data);
     });
+    es.addEventListener("state", (e) => {
+      sseConnected = true;
+      try {
+        const st = JSON.parse(e.data);
+        if (!st || !st.id) return;
+        if (st.id === "sensor-usb_voltage" && typeof st.value === "number") {
+          liveUsbVoltage = st.value;
+          scheduleRender();
+        } else if (st.id === "sensor-usb_current" && typeof st.value === "number") {
+          liveUsbCurrent = st.value;
+          scheduleRender();
+        } else if (st.id === "number-usb_target_voltage" && typeof st.value === "number") {
+          liveUsbTargetV = st.value;
+          const pdSel = document.getElementById("sg-pd-v");
+          if (pdSel) pdSel.value = String(Math.round(st.value));
+          scheduleRender();
+        }
+      } catch (_) {}
+    });
     es.addEventListener("ping", () => {
       sseConnected = true;
     });
@@ -176,6 +198,14 @@
     fetch("/button/" + slug + "/press", { method: "POST" }).catch((err) =>
       console.warn("Button press failed:", err)
     );
+  }
+
+  function setUsbTargetVoltage(volts) {
+    liveUsbTargetV = volts;
+    fetch("/number/usb_target_voltage/set?value=" + encodeURIComponent(volts), {
+      method: "POST",
+    }).catch((err) => console.warn("Set USB target voltage failed:", err));
+    scheduleRender();
   }
 
   function buildVerdict(latestSample, latestStallEvt) {
@@ -431,11 +461,24 @@
     rootEl.id = "sg-analyzer-root";
     rootEl.innerHTML = `
       <div class="sg-hdr">
-        <div class="sg-title">
+          <div class="sg-title">
           <span>MicroDriver StallGuard &amp; Motion Analyzer</span>
           <span id="sg-status-badge" class="sg-badge">Connecting...</span>
+          <span id="sg-pd-badge" class="sg-badge" title="Negotiated HUSB238 USB-PD Output Voltage &amp; Current">USB-PD: -- V</span>
         </div>
         <div class="sg-toolbar">
+          <label style="font-size:12px;color:#94a3b8;display:flex;align-items:center;gap:4px">
+            PD Target:
+            <select id="sg-pd-v" class="sg-sel" title="Live HUSB238 USB-PD Target Voltage">
+              <option value="5">5 V</option>
+              <option value="9">9 V</option>
+              <option value="12">12 V</option>
+              <option value="15">15 V</option>
+              <option value="18">18 V</option>
+              <option value="20" selected>20 V</option>
+            </select>
+          </label>
+          <span style="color:#475569">|</span>
           <button class="sg-btn sg-btn-act" data-cmd="home_-">Home -</button>
           <button class="sg-btn sg-btn-act" data-cmd="home_+">Home +</button>
           <button class="sg-btn" data-cmd="move_1000_steps_backward">-1000 Steps</button>
@@ -536,6 +579,10 @@
 
     rootEl.querySelectorAll("[data-cmd]").forEach((btn) => {
       btn.addEventListener("click", () => triggerButton(btn.getAttribute("data-cmd")));
+    });
+
+    document.getElementById("sg-pd-v").addEventListener("change", (e) => {
+      setUsbTargetVoltage(+e.target.value);
     });
 
     document.getElementById("sg-xaxis").addEventListener("change", (e) => {
@@ -703,6 +750,18 @@
 
     statusBadgeEl.textContent = `${sseConnected ? "LIVE" : "CONNECTING"} · ${phaseName} · ${samples.length} samples`;
     statusBadgeEl.style.borderColor = latest && latest.phase !== 0 ? "#10b981" : "#475569";
+
+    const pdBadge = document.getElementById("sg-pd-badge");
+    if (pdBadge) {
+      if (liveUsbVoltage !== null) {
+        const curStr = liveUsbCurrent !== null ? ` / ${liveUsbCurrent.toFixed(2)} A` : "";
+        pdBadge.textContent = `USB-PD: ${liveUsbVoltage.toFixed(0)} V${curStr} (target ${liveUsbTargetV} V)`;
+        pdBadge.style.borderColor =
+          liveUsbVoltage >= liveUsbTargetV ? "#10b981" : "#f59e0b";
+      } else {
+        pdBadge.textContent = `USB-PD Target: ${liveUsbTargetV} V`;
+      }
+    }
 
     if (collapsed) return;
 

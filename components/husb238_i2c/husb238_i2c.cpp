@@ -36,6 +36,71 @@ uint8_t HUSB238::negotiated_to_selection(uint8_t negotiated_code) {
   }
 }
 
+uint8_t HUSB238::volts_to_selection(int volts) {
+  if (volts >= 20)
+    return SEL_20V;
+  if (volts >= 18)
+    return SEL_18V;
+  if (volts >= 15)
+    return SEL_15V;
+  if (volts >= 12)
+    return SEL_12V;
+  if (volts >= 9)
+    return SEL_9V;
+  if (volts >= 5)
+    return SEL_5V;
+  return SEL_NONE;
+}
+
+const char *HUSB238::selection_to_str(uint8_t selection_code) {
+  switch (selection_code) {
+    case SEL_5V: return "5V";
+    case SEL_9V: return "9V";
+    case SEL_12V: return "12V";
+    case SEL_15V: return "15V";
+    case SEL_18V: return "18V";
+    case SEL_20V: return "20V";
+    default: return "NONE";
+  }
+}
+
+void HUSB238::set_request_voltage_volts(int volts) {
+  const uint8_t code = volts_to_selection(volts);
+  ESP_LOGI(TAG, "Setting desired PD voltage to %d V (selection 0x%X = %s)", volts, code, selection_to_str(code));
+  this->desired_selection_ = code;
+  this->target_selection_ = SEL_NONE;
+  this->request_attempts_ = 0;
+  this->cap_refresh_sent_ = false;
+  this->source_attached_ = false;
+  if (!this->is_failed()) {
+    this->update();
+  }
+}
+
+void HUSB238::log_advertised_pdos_() {
+  static const struct {
+    const char *name;
+    uint8_t reg;
+  } ALL_PDOS[] = {
+      {"5V", REG_SRC_PDO_5V},   {"9V", REG_SRC_PDO_9V},   {"12V", REG_SRC_PDO_12V},
+      {"15V", REG_SRC_PDO_15V}, {"18V", REG_SRC_PDO_18V}, {"20V", REG_SRC_PDO_20V},
+  };
+  ESP_LOGI(TAG, "PD source advertised capabilities:");
+  uint8_t detected_count = 0;
+  for (const auto &p : ALL_PDOS) {
+    uint8_t v = 0;
+    if (!read_register(p.reg, &v, 1))
+      continue;
+    if (v & 0x80) {
+      detected_count++;
+      ESP_LOGI(TAG, "  [%u] %-3s up to %.2f A (raw=0x%02X)", detected_count, p.name, decode_current(v & 0x0F), v);
+    }
+  }
+  if (detected_count == 0) {
+    ESP_LOGW(TAG, "  (none - source advertises no PDOs yet)");
+  }
+}
+
 uint8_t HUSB238::best_available_selection(uint8_t desired) {
   // SRC_PDO availability registers, ascending in voltage. Bit 7 set = the source
   // advertises that PDO. We pick the highest advertised voltage that is <= desired.
@@ -72,40 +137,63 @@ uint8_t HUSB238::best_available_selection(uint8_t desired) {
 void HUSB238::update() {
   update_status();
 
-  // Debug: dump raw PD_STATUS1 every cycle so we can see whether ATTACH (bit 6,
-  // 0x40) is actually being read as set. Remove once attach behaviour is confirmed.
-  uint8_t dbg_status1;
-  if (read_register(REG_PD_STATUS1, &dbg_status1, 1))
-    ESP_LOGD(TAG, "PD_STATUS1 = 0x%02X (ATTACH=%d)", dbg_status1, (dbg_status1 & PD_STATUS1_ATTACH) ? 1 : 0);
-  else
-    ESP_LOGD(TAG, "PD_STATUS1 read failed");
-
-  if (desired_selection_ == SEL_NONE)
-    return;
-
   // Only act if a source is attached; GO_COMMAND against an unattached port wedges
   // the bus. Track attach edges so we (re)evaluate the target on each fresh attach.
   uint8_t status1;
-  if (!read_register(REG_PD_STATUS1, &status1, 1))
+  if (!read_register(REG_PD_STATUS1, &status1, 1)) {
+    ESP_LOGD(TAG, "PD_STATUS1 read failed");
     return;
+  }
+  const uint8_t pd_response = (status1 >> 3) & 0x07;
+  ESP_LOGD(TAG, "PD_STATUS1 = 0x%02X (ATTACH=%d, RESPONSE=%u)", status1, (status1 & PD_STATUS1_ATTACH) ? 1 : 0,
+           pd_response);
+
   if (!(status1 & PD_STATUS1_ATTACH)) {
     source_attached_ = false;
+    cap_refresh_sent_ = false;
+    target_selection_ = SEL_NONE;
     return;
   }
 
   if (!source_attached_) {
     source_attached_ = true;
     request_attempts_ = 0;
+    cap_refresh_sent_ = false;
+    log_advertised_pdos_();
+  }
 
-    // Request the highest voltage the source actually advertises, capped at desired.
-    // Requesting an UNADVERTISED voltage (e.g. 20 V from a 15 V brick) just makes the
-    // source ignore us or renegotiate every cycle -> VBUS dips -> ESP bootloop.
-    target_selection_ = best_available_selection(desired_selection_);
-    if (target_selection_ == SEL_NONE) {
-      ESP_LOGW(TAG, "PD source advertises no usable PDO <= request; leaving default voltage");
-    } else if (target_selection_ != desired_selection_) {
-      ESP_LOGI(TAG, "Requested selection 0x%X not offered; falling back to highest available 0x%X",
-               desired_selection_, target_selection_);
+  if (desired_selection_ == SEL_NONE)
+    return;
+
+  // Re-evaluate the best available PDO whenever we haven't locked onto the desired
+  // voltage yet (e.g. if the HUSB238 was still receiving 15V/18V/20V capabilities
+  // on the first attach tick, or after requesting Get_SRC_Cap).
+  if (target_selection_ != desired_selection_) {
+    const uint8_t new_target = best_available_selection(desired_selection_);
+    if (new_target != target_selection_) {
+      target_selection_ = new_target;
+      request_attempts_ = 0;
+      if (target_selection_ == SEL_NONE) {
+        ESP_LOGW(TAG, "PD source advertises no usable PDO <= %s; leaving default voltage",
+                 selection_to_str(desired_selection_));
+      } else if (target_selection_ != desired_selection_) {
+        ESP_LOGI(TAG, "Requested %s (0x%X) not offered yet; highest available is %s (0x%X)",
+                 selection_to_str(desired_selection_), desired_selection_,
+                 selection_to_str(target_selection_), target_selection_);
+      } else {
+        ESP_LOGI(TAG, "Target PD voltage %s (0x%X) is advertised by source",
+                 selection_to_str(target_selection_), target_selection_);
+      }
+    }
+
+    // If the charger still doesn't show our desired PDO, ask HUSB238 once to
+    // refresh source capabilities (GO_COMMAND = 0b00100) in case the initial
+    // capability table was incomplete.
+    if (target_selection_ != desired_selection_ && !cap_refresh_sent_) {
+      cap_refresh_sent_ = true;
+      ESP_LOGI(TAG, "Requesting fresh Source_Capabilities (GO_GET_SRC_CAP) looking for %s",
+               selection_to_str(desired_selection_));
+      write_register(REG_GO_COMMAND, GO_GET_SRC_CAP);
     }
   }
 
@@ -131,10 +219,13 @@ void HUSB238::update() {
 }
 
 bool HUSB238::request_voltage(uint8_t selection_code) {
-  ESP_LOGI(TAG, "Requesting PD voltage (SRC_PDO selection 0x%X)", selection_code);
+  ESP_LOGI(TAG, "Requesting PD voltage %s (SRC_PDO selection 0x%X)", selection_to_str(selection_code), selection_code);
 
-  // SRC_PDO holds the selection in the top 4 bits.
-  if (!write_register(REG_SRC_PDO, (uint8_t) (selection_code << 4))) {
+  // SRC_PDO holds the selection in the top 4 bits; preserve the lower 4 bits.
+  uint8_t src_pdo = 0;
+  read_register(REG_SRC_PDO, &src_pdo, 1);
+  src_pdo = static_cast<uint8_t>((src_pdo & 0x0F) | ((selection_code & 0x0F) << 4));
+  if (!write_register(REG_SRC_PDO, src_pdo)) {
     ESP_LOGW(TAG, "Failed to write SRC_PDO");
     return false;
   }

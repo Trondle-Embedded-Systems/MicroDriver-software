@@ -41,14 +41,16 @@ esphome:
           # For holding torque switch back to `normal` and set a hold_current
           # (and drop auto_disable below) once power is stable.
           standstill_mode: freewheeling
-      # Apply the restored Max Speed / Acceleration / StallGuard settings (their
-      # set_actions don't run when a value is restored at boot).
+      # Apply the restored Max Speed / Acceleration / StallGuard / USB PD settings
+      # (their set_actions don't run when a value is restored at boot).
       - lambda: |-
           id(main_stepper)->set_max_speed(id(max_speed).state);
           id(main_stepper)->set_acceleration(id(acceleration_setting).state);
           id(main_stepper)->set_homing_sgthrs(
               static_cast<uint8_t>(lroundf(id(stallguard_sensitivity).state)));
           id(main_stepper)->set_stallguard_recording(id(stallguard_recording).state);
+          id(usb_pd)->set_request_voltage_volts(
+              static_cast<int>(lroundf(id(usb_target_voltage).state)));
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -355,6 +357,23 @@ number:
             id(main_stepper)->set_max_speed(fabs(x));
           }
 
+  # Live USB-PD target voltage (5 / 9 / 12 / 15 / 18 / 20 V). Rounds to nearest
+  # supported HUSB238 PDO and falls back to the highest advertised source PDO <= target.
+  - platform: template
+    name: USB Target Voltage
+    id: usb_target_voltage
+    min_value: 5
+    max_value: 20
+    step: 1
+    initial_value: 20
+    unit_of_measurement: V
+    icon: mdi:flash
+    restore_value: true
+    optimistic: true
+    mode: box
+    set_action:
+      - lambda: id(usb_pd)->set_request_voltage_volts(static_cast<int>(lroundf(x)));
+
 # Stop Move / Target Position / Jog moves when StallGuard confirms the motor is
 # blocked at cruise speed (end-stop or obstacle) instead of forcing against it.
 # Uses StallGuard Sensitivity. Turn off if it stops normal moves by mistake.
@@ -445,12 +464,10 @@ output:
 
 husb238_i2c:
   id: usb_pd
-  # 12 V has far more current headroom than 20 V (20 V PDOs are often only 1 A,
-  # whose OCP trips on inrush -> brownout/bootloop). The driver auto-falls back to
-  # the highest voltage the source actually advertises if 12 V isn't offered.
-  # Raise to 15/20 only if your supply sustains the inrush (or after adding an
-  # inrush-limiting / soft-start stage on VBUS->VCC in hardware).
-  request_voltage: 12
+  # Default target PD voltage (20 V); adjustable live via "USB Target Voltage".
+  # The driver automatically negotiates the highest source PDO <= request_voltage
+  # and re-evaluates on every poll if 20 V becomes available after attach.
+  request_voltage: 20
   output_voltage:
     name: "USB Voltage"
   output_current:

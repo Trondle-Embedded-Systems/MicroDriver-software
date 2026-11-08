@@ -54,6 +54,14 @@ class HUSB238 : public PollingComponent, public i2c::I2CDevice {
   // disables auto-request and leaves whatever the chip negotiated on its own.
   void set_request_voltage(uint8_t code) { desired_selection_ = code; }
 
+  // Runtime voltage setter in Volts (5, 9, 12, 15, 18, 20; 0 = auto).
+  // Re-evaluates advertised PDOs and triggers negotiation on the next update.
+  void set_request_voltage_volts(int volts);
+
+  // Map a voltage in Volts to the corresponding PdSelection enum value.
+  static uint8_t volts_to_selection(int volts);
+  static const char *selection_to_str(uint8_t selection_code);
+
   // Request a voltage from the attached PD source at runtime. Returns true if
   // the I2C transaction succeeded (NOT whether the source accepted it -- that
   // shows up later in PD_STATUS0).
@@ -62,7 +70,7 @@ class HUSB238 : public PollingComponent, public i2c::I2CDevice {
  private:
   // Real HUSB238 register map (Hynetek datasheet / Adafruit + SparkFun docs).
   static const uint8_t REG_PD_STATUS0 = 0x00;  // [7:4] negotiated voltage, [3:0] current
-  static const uint8_t REG_PD_STATUS1 = 0x01;  // bit6 = ATTACH
+  static const uint8_t REG_PD_STATUS1 = 0x01;  // bit6 = ATTACH, [5:3] = PD_RESPONSE
   static const uint8_t REG_SRC_PDO_5V = 0x02;   // bit7 = detected, [3:0] = current
   static const uint8_t REG_SRC_PDO_9V = 0x03;
   static const uint8_t REG_SRC_PDO_12V = 0x04;
@@ -70,9 +78,10 @@ class HUSB238 : public PollingComponent, public i2c::I2CDevice {
   static const uint8_t REG_SRC_PDO_18V = 0x06;
   static const uint8_t REG_SRC_PDO_20V = 0x07;
   static const uint8_t REG_SRC_PDO = 0x08;      // [7:4] = requested PdSelection
-  static const uint8_t REG_GO_COMMAND = 0x09;   // write 0x01 to request SRC_PDO
+  static const uint8_t REG_GO_COMMAND = 0x09;   // write 0x01 to request SRC_PDO, 0x04 for Get_SRC_Cap
 
   static const uint8_t GO_REQUEST_PDO = 0x01;
+  static const uint8_t GO_GET_SRC_CAP = 0x04;
   static const uint8_t PD_STATUS1_ATTACH = 0x40;  // bit 6
 
   bool read_register(uint8_t reg, uint8_t *data, size_t len);
@@ -104,8 +113,11 @@ class HUSB238 : public PollingComponent, public i2c::I2CDevice {
   // GO_COMMAND every cycle (repeated PD renegotiation browns out VBUS -> bootloop).
   uint8_t target_selection_{SEL_NONE};
   bool source_attached_{false};
+  bool cap_refresh_sent_{false};
   uint8_t request_attempts_{0};
   static const uint8_t MAX_REQUEST_ATTEMPTS = 3;
+
+  void log_advertised_pdos_();
 
   // State tracking
   float last_output_voltage_{-1.0f};
