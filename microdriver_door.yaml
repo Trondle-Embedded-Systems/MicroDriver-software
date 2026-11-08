@@ -36,6 +36,7 @@ esphome:
           standstill_mode: freewheeling
       # Keep the motor de-energized at standstill.
       - tmc2209.disable: main_stepper
+      - lambda: id(main_stepper).set_obstacle_detection(true);
 
 esp32:
   board: esp32-s3-devkitc-1
