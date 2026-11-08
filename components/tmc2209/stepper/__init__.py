@@ -1,7 +1,9 @@
-from esphome.const import CONF_ID, CONF_SPEED, CONF_THRESHOLD
-from esphome.core import EsphomeError
+from pathlib import Path
+from esphome.const import CONF_ID, CONF_JS_INCLUDE, CONF_SPEED, CONF_THRESHOLD
+from esphome.core import CORE, CoroPriority, EsphomeError, coroutine_with_priority
 import esphome.codegen as cg
 import esphome.config_validation as cv
+import esphome.final_validate as fv
 from esphome.components import stepper
 from esphome.components.tmc2209_hub import CONF_TMC2209_HUB_ID
 from .. import (
@@ -103,7 +105,31 @@ CONFIG_SCHEMA = cv.All(
 )
 
 
+def _inject_web_server_dashboard(config):
+    fconf = fv.full_config.get()
+    if fconf and "web_server" in fconf and isinstance(fconf["web_server"], dict):
+        fconf["web_server"].setdefault(
+            CONF_JS_INCLUDE,
+            str(Path(__file__).resolve().parent / "stallguard_dashboard.js"),
+        )
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _inject_web_server_dashboard
+
+
+@coroutine_with_priority(CoroPriority.CORE)
 async def to_code(config):
+    if (
+        CORE.config
+        and "web_server" in CORE.config
+        and isinstance(CORE.config["web_server"], dict)
+    ):
+        CORE.config["web_server"].setdefault(
+            CONF_JS_INCLUDE,
+            str(Path(__file__).resolve().parent / "stallguard_dashboard.js"),
+        )
+
     var = cg.new_Pvariable(config[CONF_ID])
 
     await register_tmc2209_base(var, config)

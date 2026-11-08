@@ -103,9 +103,24 @@ void TMC2209Stepper::setup() {
   // the base component, so driver errors do not declare a homing endpoint.
   this->set_enable_stall_detection(true);
   this->add_on_stall_callback([this]() {
+    int32_t sg = this->last_sg_result_;
+    if (this->read_register_checked(SG_RESULT, &sg)) {
+      this->last_sg_result_ = sg;
+      this->last_sg_ms_ = millis();
+    }
     if (this->endstop_seek_phase_ != EndstopSeekPhase::IDLE) {
-      ESP_LOGI(TAG, "End-stop seek: StallGuard DIAG triggered, stopping");
+      const int64_t travelled = std::abs(static_cast<int64_t>(this->current_position) -
+                                         static_cast<int64_t>(this->endstop_seek_start_position_));
+      this->last_steps_since_arm_ = static_cast<int32_t>(std::min<int64_t>(travelled, 1000000000LL));
+      this->last_stop_code_ = StopCode::SEEK_DIAG_PIN;
+      this->emit_trace_sample_();
+      this->emit_event_("SEEK_DIAG_PIN", "Home seek stopped by hardware DIAG pin");
+      ESP_LOGI(TAG, "End-stop seek: StallGuard DIAG triggered at pos=%d speed=%.0f SG_RESULT=%d, stopping",
+               (int) this->current_position, this->current_speed_, (int) this->last_sg_result_);
       this->finish_endstop_seek_(true);
+    } else if (this->is_moving_()) {
+      this->emit_trace_sample_();
+      this->emit_event_("DIAG_PULSE", "Hardware DIAG pin pulsed during normal move");
     }
   });
 
@@ -172,9 +187,18 @@ void TMC2209Stepper::setup() {
   // A driver reset (supply dip) drops steps and reverts DEDGE/microstepping
   // until the registers are replayed, so the step count can't be trusted after.
   this->add_on_driver_status_callback([this](DriverStatusEvent event) {
-    if (event == RESET && this->position_known_) {
-      this->position_known_ = false;
-      ESP_LOGW(TAG, "Driver reset: door position no longer known, run Home +/- to locate it again");
+    if (event == RESET) {
+      this->last_stop_code_ = StopCode::DRIVER_RESET;
+      this->emit_trace_sample_();
+      this->emit_event_("DRIVER_RESET", "TMC2209 power/supply reset detected (GSTAT.RESET)");
+      if (this->position_known_) {
+        this->position_known_ = false;
+        ESP_LOGW(TAG, "Driver reset: door position no longer known, run Home +/- to locate it again");
+      }
+    } else if (event == DRIVER_ERROR || event == CP_UNDERVOLTAGE || event == OVERTEMPERATURE) {
+      this->last_stop_code_ = StopCode::DRIVER_ERROR;
+      this->emit_trace_sample_();
+      this->emit_event_("DRIVER_ERROR", "TMC2209 driver error / undervoltage / overtemperature");
     }
   });
 
@@ -189,18 +213,36 @@ void TMC2209Stepper::on_shutdown() { this->enable(false); }
 void IRAM_ATTR HOT TMC2209Stepper::loop() {
   TMC2209Component::loop();
 
-  // Compute speed and direction
+  // Compute speed, instantaneous acceleration, and direction
+  const float prev_speed = this->current_speed_;
   const uint32_t now = micros();
   this->calculate_speed_(now);
   const int32_t position = this->current_position;
   this->current_direction = this->target_position > position ? Direction::FORWARD :
       (this->target_position < position ? Direction::BACKWARD : Direction::STANDSTILL);
 
+  if (this->current_direction == Direction::STANDSTILL || this->current_speed_ <= 0.0f || position == this->target_position) {
+    this->current_accel_ = 0.0f;
+  } else if (this->braking_) {
+    this->current_accel_ = -std::max(this->acceleration_, this->deceleration_);
+  } else if (this->current_speed_ > prev_speed + 0.01f) {
+    this->current_accel_ = this->acceleration_;
+  } else if (this->current_speed_ < prev_speed - 0.01f) {
+    this->current_accel_ = -this->deceleration_;
+  } else {
+    this->current_accel_ = 0.0f;
+  }
+  this->prev_speed_ = this->current_speed_;
+
   // Check before issuing more motion. Homing accepts the first valid
   // StallGuard sample, including during acceleration/deceleration; it must
   // not wait for cruise speed or re-arm on each phase transition.
   if (this->endstop_seek_phase_ != EndstopSeekPhase::IDLE && this->endstop_stalled_()) {
-    ESP_LOGI(TAG, "End-stop seek: StallGuard threshold reached, stopping");
+    this->last_stop_code_ = StopCode::SEEK_SG_UART;
+    this->emit_trace_sample_();
+    this->emit_event_("SEEK_SG_UART", "Home seek stopped: UART SG_RESULT <= SGTHRS*2 after >=32 steps");
+    ESP_LOGI(TAG, "End-stop seek: StallGuard threshold reached at pos=%d speed=%.0f SG_RESULT=%d, stopping",
+             (int) this->current_position, this->current_speed_, (int) this->last_sg_result_);
     this->finish_endstop_seek_(true);
     return;
   }
@@ -235,6 +277,9 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
       this->sps_.interval_us = timed_out ? 0 : interval_us;
       portEXIT_CRITICAL(&this->sps_.lock);
       if (timed_out) {
+        this->last_stop_code_ = StopCode::LOOP_TIMEOUT;
+        this->emit_trace_sample_();
+        this->emit_event_("LOOP_TIMEOUT", "Motion stopped: main loop unresponsive for 250 ms");
         this->enable(false);
         this->on_driver_status_callback_.call(DRIVER_ERROR);
         ESP_LOGE(TAG, "Motion stopped: main loop unresponsive for 250 ms");
@@ -303,6 +348,9 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
 
   // StallGuard homing: stall at end-stop means we have found home.
   if (this->is_homing_ && this->is_stalled()) {
+    this->last_stop_code_ = StopCode::HOMING_SG_UART;
+    this->emit_trace_sample_();
+    this->emit_event_("HOMING_SG_UART", "Auto-homing stall detected");
     const int32_t confirmed_home = this->target_position;  // the end-stop we aimed for
     this->current_position = confirmed_home;
     this->set_max_speed(this->pre_homing_max_speed_);
@@ -322,10 +370,16 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
         this->arm_stall_detection_();
         this->obstacle_armed_ = true;
         this->obstacle_min_speed_ = this->current_speed_ * 0.5f;
+        this->emit_trace_sample_();
+        this->emit_event_("OBSTACLE_ARMED", "Cruise speed reached (>=95% max); obstacle detection armed");
       }
     } else if (this->current_speed_ >= this->obstacle_min_speed_ && this->stall_confirmed_(this->homing_sgthrs_)) {
       // Blocked: stop right away rather than ramping down against the obstacle.
-      ESP_LOGW(TAG, "Obstacle: motor stalled at position %d, stopped", (int) this->current_position);
+      this->last_stop_code_ = StopCode::OBSTACLE_SG_UART;
+      this->emit_trace_sample_();
+      this->emit_event_("OBSTACLE_SG_UART", "Obstacle stop: 3 consecutive UART reads with SG_RESULT <= SGTHRS*2");
+      ESP_LOGW(TAG, "Obstacle: motor stalled at position %d (speed=%.0f SG_RESULT=%d), stopped",
+               (int) this->current_position, this->current_speed_, (int) this->last_sg_result_);
       this->halt_();
       this->position_known_ = false;
     }
@@ -367,6 +421,41 @@ void IRAM_ATTR HOT TMC2209Stepper::loop() {
         this->finish_endstop_seek_(false);
       }
       break;
+  }
+
+  const bool moving_now = this->is_moving_();
+  if (moving_now) {
+    this->was_moving_ = true;
+    const uint32_t now_ms = millis();
+    if (this->recording_enabled_ && (now_ms - this->last_trace_ms_) >= TRACE_INTERVAL_MS) {
+      if ((now_ms - this->last_sg_ms_) >= 40 && this->bus_enabled()) {
+        int32_t sg = 0;
+        if (this->read_register_checked(SG_RESULT, &sg)) {
+          this->last_sg_result_ = sg;
+          this->last_sg_ms_ = now_ms;
+        }
+      }
+      if (this->endstop_seek_phase_ != EndstopSeekPhase::IDLE) {
+        const int64_t travelled = std::abs(static_cast<int64_t>(this->current_position) -
+                                           static_cast<int64_t>(this->endstop_seek_start_position_));
+        this->last_steps_since_arm_ = static_cast<int32_t>(std::min<int64_t>(travelled, 1000000000LL));
+      } else if (this->obstacle_armed_) {
+        const int64_t steps_arm = std::abs(static_cast<int64_t>(this->current_position) -
+                                           static_cast<int64_t>(this->stall_arm_position_));
+        this->last_steps_since_arm_ = static_cast<int32_t>(std::min<int64_t>(steps_arm, 1000000000LL));
+      }
+      this->emit_trace_sample_();
+    }
+  } else if (this->was_moving_) {
+    this->was_moving_ = false;
+    this->current_accel_ = 0.0f;
+    if (this->last_stop_code_ == StopCode::NONE && this->has_reached_target()) {
+      this->last_stop_code_ = StopCode::TARGET_REACHED;
+      this->emit_trace_sample_();
+      this->emit_event_("TARGET_REACHED", "Target position reached normally");
+    } else {
+      this->emit_trace_sample_();
+    }
   }
 }
 
@@ -416,6 +505,8 @@ bool TMC2209Stepper::sg_stalled_(uint32_t sgthrs) {
   if (!this->read_register_checked(SG_RESULT, &sgresult)) {
     return false;
   }
+  this->last_sg_result_ = sgresult;
+  this->last_sg_ms_ = millis();
   // Datasheet (SGTHRS): a stall is signaled with SG_RESULT <= SGTHRS*2.
   return sgresult <= static_cast<int32_t>(sgthrs << 1);
 }
@@ -423,6 +514,7 @@ bool TMC2209Stepper::sg_stalled_(uint32_t sgthrs) {
 void TMC2209Stepper::arm_stall_detection_() {
   this->stall_arm_position_ = this->current_position;
   this->consecutive_stalls_ = 0;
+  this->last_steps_since_arm_ = 0;
   this->last_stall_check_ms_ = millis() - STALL_POLL_INTERVAL_MS;
 }
 
@@ -437,12 +529,14 @@ bool TMC2209Stepper::stall_confirmed_(uint32_t sgthrs) {
   // become valid, then require several consecutive matching samples.
   const int64_t steps_since_arm = std::abs(static_cast<int64_t>(this->current_position) -
                                            static_cast<int64_t>(this->stall_arm_position_));
+  this->last_steps_since_arm_ = static_cast<int32_t>(std::min<int64_t>(steps_since_arm, 1000000000LL));
   if (steps_since_arm < ENDSTOP_STALL_ARM_STEPS)
     return false;
 
   if (this->sg_stalled_(sgthrs)) {
     if (this->consecutive_stalls_ < STALL_CONFIRMATIONS)
       this->consecutive_stalls_++;
+    this->emit_trace_sample_();
   } else {
     this->consecutive_stalls_ = 0;
   }
@@ -460,7 +554,15 @@ bool TMC2209Stepper::endstop_stalled_() {
   // allowance. Count from the start of the seek, never from cruise speed.
   const int64_t travelled = std::abs(static_cast<int64_t>(this->current_position) -
                                      static_cast<int64_t>(this->endstop_seek_start_position_));
-  return travelled >= ENDSTOP_STALL_ARM_STEPS && this->sg_stalled_(this->homing_sgthrs_);
+  this->last_steps_since_arm_ = static_cast<int32_t>(std::min<int64_t>(travelled, 1000000000LL));
+  if (travelled < ENDSTOP_STALL_ARM_STEPS)
+    return false;
+  const bool stalled = this->sg_stalled_(this->homing_sgthrs_);
+  if (stalled) {
+    this->consecutive_stalls_ = 1;
+    this->emit_trace_sample_();
+  }
+  return stalled;
 }
 
 int32_t TMC2209Stepper::endstop_seek_target_(int64_t distance) {
@@ -476,6 +578,8 @@ void TMC2209Stepper::enter_endstop_fast_travel_() {
   this->endstop_seek_phase_ = EndstopSeekPhase::FAST_TRAVEL;
   this->set_max_speed(this->endstop_seek_fast_speed_);
   this->set_target_locked_(this->endstop_seek_target_(this->endstop_seek_travel_length_ - travelled));
+  this->emit_trace_sample_();
+  this->emit_event_("SEEK_FAST", "Home seek Phase 2: fast travel");
 }
 
 void TMC2209Stepper::enter_endstop_slow_approach_() {
@@ -484,6 +588,8 @@ void TMC2209Stepper::enter_endstop_slow_approach_() {
   // Keep seeking in the same direction. One billion steps is deliberately
   // finite so the base stepper's signed distance calculation cannot overflow.
   this->set_target_locked_(this->endstop_seek_target_(1000000000LL));
+  this->emit_trace_sample_();
+  this->emit_event_("SEEK_SLOW", "Home seek Phase 3: slow approach");
 }
 
 void TMC2209Stepper::start_endstop_seek(Direction direction, int32_t travel_length, float fast_speed,
@@ -514,6 +620,8 @@ void TMC2209Stepper::start_endstop_seek(Direction direction, int32_t travel_leng
     this->has_pending_seek_ = true;
     if (!this->braking_)
       this->begin_braking_();
+    this->emit_trace_sample_();
+    this->emit_event_("SEEK_BRAKE", "Braking to standstill before starting Home seek");
     ESP_LOGI(TAG, "End-stop seek: braking to standstill first");
     return;
   }
@@ -532,6 +640,7 @@ void TMC2209Stepper::start_endstop_seek(Direction direction, int32_t travel_leng
   this->endstop_seek_start_position_ = this->current_position;
   this->endstop_seek_travel_length_ = travel_length;
   this->endstop_seek_phase_ = EndstopSeekPhase::PROBE;
+  this->last_stop_code_ = StopCode::NONE;
   this->arm_stall_detection_();
   this->set_max_speed(slow_speed);
   this->enable(true);
@@ -541,6 +650,10 @@ void TMC2209Stepper::start_endstop_seek(Direction direction, int32_t travel_leng
   // decelerates inside it (SG_RESULT is unreliable at low speed). Switching to
   // fast travel then just raises max speed and accelerates seamlessly.
   this->set_target_locked_(this->endstop_seek_target_(1000000000LL));
+  this->emit_trace_sample_();
+  this->emit_event_("SEEK_START",
+                    direction == Direction::FORWARD ? "Home + started (Phase 1: slow probe 96 steps)"
+                                                    : "Home - started (Phase 1: slow probe 96 steps)");
   ESP_LOGI(TAG, "End-stop seek: probing %d steps at %.0f steps/s, then up to %d steps at %.0f steps/s",
            static_cast<int>(direction) * ENDSTOP_PROBE_STEPS, slow_speed, static_cast<int>(direction) * travel_length,
            fast_speed);
@@ -589,6 +702,9 @@ void TMC2209Stepper::set_target(int32_t steps) {
   }
   this->has_pending_seek_ = false;
   this->obstacle_armed_ = false;
+  this->consecutive_stalls_ = 0;
+  this->last_steps_since_arm_ = 0;
+  this->last_stop_code_ = StopCode::NONE;
 
   if (!this->is_enabled_) {
     if (this->homing_enabled_ && this->auto_disabled_) {
@@ -615,6 +731,8 @@ void TMC2209Stepper::set_target(int32_t steps) {
         this->enable(true);
         this->auto_disabled_ = false;
         this->set_target_locked_(nearest);
+        this->emit_trace_sample_();
+        this->emit_event_("HOMING_START", "Auto-homing started");
         ESP_LOGI(TAG, "StallGuard homing: nearest end-stop %d at %.0f steps/s", nearest, this->home_speed_);
         return;
       }
@@ -632,12 +750,18 @@ void TMC2209Stepper::set_target(int32_t steps) {
       this->has_pending_target_ = true;
       if (!this->braking_)
         this->begin_braking_();
+      this->emit_trace_sample_();
+      this->emit_event_("MOVE_BRAKE", "Braking before reversing/re-targeting");
       return;
     }
   }
   this->braking_ = false;
   this->has_pending_target_ = false;
   this->set_target_locked_(steps);
+  if (steps != this->current_position) {
+    this->emit_trace_sample_();
+    this->emit_event_("MOVE_START", steps > this->current_position ? "Move forward started" : "Move backward started");
+  }
 }
 
 void TMC2209Stepper::on_update_speed() {
@@ -656,12 +780,90 @@ void TMC2209Stepper::stop() {
     this->end_endstop_seek_();
   this->has_pending_target_ = false;
   this->has_pending_seek_ = false;
+  this->last_stop_code_ = StopCode::USER_STOP;
   if (this->is_moving_()) {
     if (!this->braking_)
       this->begin_braking_();
+    this->emit_trace_sample_();
+    this->emit_event_("USER_STOP", "Stop command received; braking to standstill");
   } else {
     this->halt_();
+    this->emit_trace_sample_();
+    this->emit_event_("USER_STOP", "Stop command received at standstill");
   }
+}
+
+TMC2209Stepper::MotionPhase TMC2209Stepper::compute_motion_phase_() const {
+  if (this->endstop_seek_phase_ == EndstopSeekPhase::PROBE)
+    return MotionPhase::SEEK_PROBE;
+  if (this->endstop_seek_phase_ == EndstopSeekPhase::FAST_TRAVEL)
+    return MotionPhase::SEEK_FAST;
+  if (this->endstop_seek_phase_ == EndstopSeekPhase::SLOW_APPROACH)
+    return MotionPhase::SEEK_SLOW;
+  if (this->is_homing_)
+    return MotionPhase::HOMING;
+  if (this->braking_)
+    return MotionPhase::BRAKING;
+  if (this->current_speed_ <= 0.0f || this->current_direction == Direction::STANDSTILL ||
+      this->current_position == this->target_position)
+    return MotionPhase::IDLE;
+  if (this->current_accel_ > 1.0f)
+    return MotionPhase::ACCEL;
+  if (this->current_accel_ < -1.0f)
+    return MotionPhase::DECEL;
+  return MotionPhase::CRUISE;
+}
+
+void TMC2209Stepper::emit_trace_sample_() {
+  if (!this->recording_enabled_ || !this->bus_enabled())
+    return;
+  const uint32_t now_ms = millis();
+  this->last_trace_ms_ = now_ms;
+  const int32_t pos = this->current_position;
+  const int direction = static_cast<int>(this->current_direction);
+  const float speed = this->current_speed_;
+  const int32_t hw_sgthrs = this->read_register(SGTHRS);
+  const int32_t tcool = this->read_register(TCOOLTHRS);
+  const uint8_t sw_sgthrs = this->homing_sgthrs_;
+  const int armed = this->obstacle_armed_ ? 1 : 0;
+  const int known = this->position_known_ ? 1 : 0;
+  const int32_t target_pos = this->target_position;
+  const float max_spd = this->max_speed_;
+  const float accel = this->current_accel_;
+  const uint8_t phase = static_cast<uint8_t>(this->compute_motion_phase_());
+  const uint8_t consec = this->consecutive_stalls_;
+  const int32_t steps_arm = this->last_steps_since_arm_;
+  const int diag =
+      (this->diag_pin_ != nullptr) ? (this->diag_pin_->digital_read() ? 1 : 0) : (this->diag_triggered_ ? 1 : 0);
+  const int obs_en = this->obstacle_detection_ ? 1 : 0;
+  const float min_spd = this->obstacle_armed_ ? this->obstacle_min_speed_ : (this->max_speed_ * CRUISE_ARM_SPEED_RATIO);
+  const uint8_t stop_code = static_cast<uint8_t>(this->last_stop_code_);
+
+  ESP_LOGI("sg_trace",
+           "SGTRACE,%lu,%ld,%d,%.1f,%ld,%u,%ld,%ld,%d,%d,%ld,%.1f,%.1f,%u,%u,%ld,%d,%d,%.1f,%u",
+           (unsigned long) now_ms, (long) pos, direction, speed, (long) this->last_sg_result_, (unsigned) sw_sgthrs,
+           (long) hw_sgthrs, (long) tcool, armed, known, (long) target_pos, max_spd, accel, (unsigned) phase,
+           (unsigned) consec, (long) steps_arm, diag, obs_en, min_spd, (unsigned) stop_code);
+}
+
+void TMC2209Stepper::emit_event_(const char *code, const char *reason) {
+  if (!this->recording_enabled_)
+    return;
+  const uint32_t now_ms = millis();
+  const int32_t pos = this->current_position;
+  const int32_t target_pos = this->target_position;
+  const float speed = this->current_speed_;
+  const float max_spd = this->max_speed_;
+  const float accel = this->current_accel_;
+  const uint8_t phase = static_cast<uint8_t>(this->compute_motion_phase_());
+  const uint8_t consec = this->consecutive_stalls_;
+  const int32_t steps_arm = this->last_steps_since_arm_;
+  const int diag =
+      (this->diag_pin_ != nullptr) ? (this->diag_pin_->digital_read() ? 1 : 0) : (this->diag_triggered_ ? 1 : 0);
+
+  ESP_LOGI("sg_trace", "SGEVT,%lu,%s,%ld,%ld,%.1f,%.1f,%.1f,%ld,%u,%u,%ld,%d,%u,%s", (unsigned long) now_ms, code,
+           (long) pos, (long) target_pos, speed, max_spd, accel, (long) this->last_sg_result_,
+           (unsigned) (this->homing_sgthrs_ * 2), (unsigned) consec, (long) steps_arm, diag, (unsigned) phase, reason);
 }
 
 void TMC2209Stepper::set_target_locked_(int32_t steps) {

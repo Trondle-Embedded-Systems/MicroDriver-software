@@ -120,6 +120,14 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   // Stop ordinary moves (set_target) when StallGuard confirms the motor is
   // blocked at cruise speed, instead of forcing against the obstacle forever.
   void set_obstacle_detection(bool enable) { this->obstacle_detection_ = enable; }
+  void set_stallguard_recording(bool enable) { this->recording_enabled_ = enable; }
+  bool is_stallguard_recording() const { return this->recording_enabled_; }
+  float diagnostic_speed() const { return this->current_speed_; }
+  float diagnostic_acceleration() const { return this->current_accel_; }
+  bool diagnostic_obstacle_armed() const { return this->obstacle_armed_; }
+  int32_t diagnostic_last_sg_result() const { return this->last_sg_result_; }
+  uint8_t diagnostic_phase() const { return static_cast<uint8_t>(this->compute_motion_phase_()); }
+  uint8_t diagnostic_stop_code() const { return static_cast<uint8_t>(this->last_stop_code_); }
 
   // True once an end-stop seek has located the door (or the position was set
   // by hand). Cleared at boot, after an obstacle stop and after a driver reset,
@@ -128,6 +136,31 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   void set_position_known(bool known) { this->position_known_ = known; }
 
  protected:
+  enum class MotionPhase : uint8_t {
+    IDLE = 0,
+    ACCEL = 1,
+    CRUISE = 2,
+    DECEL = 3,
+    BRAKING = 4,
+    SEEK_PROBE = 5,
+    SEEK_FAST = 6,
+    SEEK_SLOW = 7,
+    HOMING = 8,
+  };
+
+  enum class StopCode : uint8_t {
+    NONE = 0,
+    TARGET_REACHED = 1,
+    USER_STOP = 2,
+    OBSTACLE_SG_UART = 3,
+    SEEK_SG_UART = 4,
+    SEEK_DIAG_PIN = 5,
+    HOMING_SG_UART = 6,
+    DRIVER_RESET = 7,
+    DRIVER_ERROR = 8,
+    LOOP_TIMEOUT = 9,
+  };
+
   HighFrequencyLoopRequester high_freq_;
   ControlMethod control_method_{ControlMethod::CONTROL_UNSET};
 
@@ -207,6 +240,18 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   float obstacle_min_speed_{0.0f};
   bool position_known_{false};
 
+  // Telemetry & StallGuard diagnostic trace
+  bool recording_enabled_{true};
+  bool was_moving_{false};
+  float prev_speed_{0.0f};
+  float current_accel_{0.0f};
+  int32_t last_sg_result_{0};
+  uint32_t last_sg_ms_{0};
+  uint32_t last_trace_ms_{0};
+  int32_t last_steps_since_arm_{0};
+  StopCode last_stop_code_{StopCode::NONE};
+  static constexpr uint32_t TRACE_INTERVAL_MS = 80;
+
   // Controlled stop: brake to standstill, then run what was queued meanwhile.
   struct PendingSeek {
     Direction direction;
@@ -226,6 +271,9 @@ class TMC2209Stepper : public TMC2209Component, public Stepper {
   bool is_moving_() {
     return this->current_speed_ > 0.0f && this->current_direction != Direction::STANDSTILL && !this->has_reached_target();
   }
+  MotionPhase compute_motion_phase_() const;
+  void emit_trace_sample_();
+  void emit_event_(const char *code, const char *reason);
   int32_t stopping_distance_() const;
   void begin_braking_();
   void halt_();
